@@ -77,15 +77,20 @@ jobs:
           fi
           printf '%s' "$PAYLOAD" | jq -c . > /tmp/linear-payload.json
           echo "File size: $(wc -c < /tmp/linear-payload.json)"
-          cat > /tmp/curl-linear.sh << 'SCRIPT'
-          #!/bin/bash
-          curl -sS -X POST https://api.linear.app/graphql \
-            -H "Content-Type: application/json" \
-            -H "Authorization: $LINEAR_API_KEY" \
-            -d "$(cat /tmp/linear-payload.json)"
-          SCRIPT
-          chmod +x /tmp/curl-linear.sh
-          RESPONSE=$(/tmp/curl-linear.sh 2>&1) || true
+          RESPONSE=$(python3 -c "
+import urllib.request, json, sys
+payload = open('/tmp/linear-payload.json','rb').read()
+req = urllib.request.Request('https://api.linear.app/graphql',
+  data=payload,
+  headers={'Content-Type':'application/json','Authorization':'${LINEAR_API_KEY}'},
+  method='POST')
+try:
+  resp = urllib.request.urlopen(req)
+  print(resp.read().decode())
+except urllib.error.HTTPError as e:
+  print(e.read().decode(), file=sys.stderr)
+  sys.exit(1)
+") || true
           echo "Response: $RESPONSE"
 
           SUCCESS=$(printf '%s' "$RESPONSE" | jq -r '.data.projectUpdateCreate.success // false')
