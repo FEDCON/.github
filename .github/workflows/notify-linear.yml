@@ -77,28 +77,26 @@ jobs:
           fi
           printf '%s' "$PAYLOAD" | jq -c . > /tmp/linear-payload.json
           echo "File size: $(wc -c < /tmp/linear-payload.json)"
-          RESPONSE=$(python3 -c "
-import urllib.request, json, sys
-payload = open('/tmp/linear-payload.json','rb').read()
-req = urllib.request.Request('https://api.linear.app/graphql',
-  data=payload,
-  headers={'Content-Type':'application/json','Authorization':'${LINEAR_API_KEY}'},
-  method='POST')
-try:
-  resp = urllib.request.urlopen(req)
-  print(resp.read().decode())
-except urllib.error.HTTPError as e:
-  print(e.read().decode(), file=sys.stderr)
-  sys.exit(1)
-") || true
-          echo "Response: $RESPONSE"
 
-          SUCCESS=$(printf '%s' "$RESPONSE" | jq -r '.data.projectUpdateCreate.success // false')
-          if [ "$SUCCESS" = "true" ]; then
-            URL=$(printf '%s' "$RESPONSE" | jq -r '.data.projectUpdateCreate.projectUpdate.url')
-            echo "Posted Linear project update: $URL"
-          else
-            echo "Linear API error:"
-            printf '%s' "$RESPONSE" | jq .
-            exit 1
-          fi
+          cat > /tmp/post-linear.py << 'PYEOF'
+import urllib.request, json, sys, os
+payload = open('/tmp/linear-payload.json','rb').read()
+api_key = os.environ['LINEAR_API_KEY']
+req = urllib.request.Request('https://api.linear.app/graphql',
+    data=payload,
+    headers={'Content-Type':'application/json','Authorization':api_key},
+    method='POST')
+try:
+    resp = urllib.request.urlopen(req)
+    data = json.loads(resp.read())
+    if data.get('data',{}).get('projectUpdateCreate',{}).get('success'):
+        url = data['data']['projectUpdateCreate']['projectUpdate']['url']
+        print(f'Posted Linear project update: {url}')
+    else:
+        print(f'Linear API error: {json.dumps(data)}', file=sys.stderr)
+        sys.exit(1)
+except urllib.error.HTTPError as e:
+    print(f'HTTP {e.code}: {e.read().decode()}', file=sys.stderr)
+    sys.exit(1)
+PYEOF
+          python3 /tmp/post-linear.py
