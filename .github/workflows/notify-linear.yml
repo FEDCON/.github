@@ -11,6 +11,9 @@ on:
         description: "success, failure, or cancelled"
         type: string
         default: "success"
+    secrets:
+      LINEAR_API_KEY:
+        required: true
 
 jobs:
   notify:
