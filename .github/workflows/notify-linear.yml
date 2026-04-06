@@ -77,26 +77,12 @@ jobs:
           fi
           printf '%s' "$PAYLOAD" | jq -c . > /tmp/linear-payload.json
           echo "File size: $(wc -c < /tmp/linear-payload.json)"
-
-          cat > /tmp/post-linear.py << 'PYEOF'
-import urllib.request, json, sys, os
-payload = open('/tmp/linear-payload.json','rb').read()
-api_key = os.environ['LINEAR_API_KEY']
-req = urllib.request.Request('https://api.linear.app/graphql',
-    data=payload,
-    headers={'Content-Type':'application/json','Authorization':api_key},
-    method='POST')
-try:
-    resp = urllib.request.urlopen(req)
-    data = json.loads(resp.read())
-    if data.get('data',{}).get('projectUpdateCreate',{}).get('success'):
-        url = data['data']['projectUpdateCreate']['projectUpdate']['url']
-        print(f'Posted Linear project update: {url}')
-    else:
-        print(f'Linear API error: {json.dumps(data)}', file=sys.stderr)
-        sys.exit(1)
-except urllib.error.HTTPError as e:
-    print(f'HTTP {e.code}: {e.read().decode()}', file=sys.stderr)
-    sys.exit(1)
-PYEOF
-          python3 /tmp/post-linear.py
+      - name: Checkout .github repo for scripts
+        uses: actions/checkout@v4
+        with:
+          repository: FEDCON/.github
+          path: dotgithub
+      - name: Post to Linear API
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+        run: python3 dotgithub/.github/scripts/post-linear-update.py
