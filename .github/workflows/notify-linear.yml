@@ -70,6 +70,11 @@ jobs:
           fi
 
           echo "Posting to Linear project: $PROJECT_ID"
+          echo "Payload length: ${#PAYLOAD}"
+          if [ -z "$PAYLOAD" ]; then
+            echo "ERROR: Payload is empty — jq likely failed"
+            exit 1
+          fi
           HTTP_CODE=$(curl -s -o /tmp/linear-response.json -w '%{http_code}' -X POST https://api.linear.app/graphql \
             -H "Content-Type: application/json" \
             -H "Authorization: $LINEAR_API_KEY" \
