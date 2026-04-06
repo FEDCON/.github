@@ -40,13 +40,14 @@ jobs:
           fi
 
           SHORT_SHA="${COMMIT_SHA:0:7}"
-          FIRST_LINE=$(echo "$COMMIT_MSG" | head -1)
+          FIRST_LINE=$(printf '%s' "$COMMIT_MSG" | head -1)
           HEALTH="onTrack"
 
-          # Build markdown body based on trigger type
-          if echo "$FIRST_LINE" | grep -qi '^\[linear\]'; then
-            NOTE=$(echo "$FIRST_LINE" | sed 's/^\[linear\] *//I')
-            BODY="## Update: ${REPO_NAME}"$'\n\n'"**Author:** ${COMMIT_AUTHOR}"$'\n'"**Commit:** \`${SHORT_SHA}\`"$'\n\n'"### Note"$'\n'"${NOTE}"$'\n\n'"[View commit](${COMMIT_URL})"$'\n\n'"---"$'\n'"*Project update from GitHub Actions*"
+          # Build markdown body using jq for safe JSON string handling
+          if printf '%s' "$FIRST_LINE" | grep -qi '^\[linear\]'; then
+            NOTE=$(printf '%s' "$FIRST_LINE" | sed 's/^\[linear\] *//I')
+            BODY=$(printf '## Update: %s\n\n**Author:** %s\n**Commit:** `%s`\n\n### Note\n%s\n\n[View commit](%s)\n\n---\n*Project update from GitHub Actions*' \
+              "$REPO_NAME" "$COMMIT_AUTHOR" "$SHORT_SHA" "$NOTE" "$COMMIT_URL")
           elif [ "$TRIGGER_TYPE" = "deploy" ]; then
             if [ "$DEPLOY_STATUS" = "success" ]; then
               STATUS_TEXT="Deployed successfully"
@@ -54,9 +55,11 @@ jobs:
               STATUS_TEXT="Deploy FAILED"
               HEALTH="atRisk"
             fi
-            BODY="## Deploy: ${REPO_NAME}"$'\n\n'"**Status:** ${STATUS_TEXT}"$'\n'"**Author:** ${COMMIT_AUTHOR}"$'\n'"**Commit:** \`${SHORT_SHA}\` — ${FIRST_LINE}"$'\n\n'"[View commit](${COMMIT_URL})"$'\n\n'"---"$'\n'"*Automated deploy update from GitHub Actions*"
+            BODY=$(printf '## Deploy: %s\n\n**Status:** %s\n**Author:** %s\n**Commit:** `%s` — %s\n\n[View commit](%s)\n\n---\n*Automated deploy update from GitHub Actions*' \
+              "$REPO_NAME" "$STATUS_TEXT" "$COMMIT_AUTHOR" "$SHORT_SHA" "$FIRST_LINE" "$COMMIT_URL")
           else
-            BODY="## Commit: ${REPO_NAME}"$'\n\n'"**Author:** ${COMMIT_AUTHOR}"$'\n'"**Commit:** \`${SHORT_SHA}\` — ${FIRST_LINE}"$'\n\n'"[View commit](${COMMIT_URL})"$'\n\n'"---"$'\n'"*Automated commit update from GitHub Actions*"
+            BODY=$(printf '## Commit: %s\n\n**Author:** %s\n**Commit:** `%s` — %s\n\n[View commit](%s)\n\n---\n*Automated commit update from GitHub Actions*' \
+              "$REPO_NAME" "$COMMIT_AUTHOR" "$SHORT_SHA" "$FIRST_LINE" "$COMMIT_URL")
           fi
 
           # Post to Linear GraphQL API
@@ -69,17 +72,18 @@ jobs:
             --arg health "$HEALTH" \
             '{query: $query, variables: {input: {projectId: $projectId, body: $body, health: $health}}}')
 
-          RESPONSE=$(curl -s -X POST https://api.linear.app/graphql \
+          echo "Posting to Linear project: $PROJECT_ID"
+          RESPONSE=$(curl -sf -X POST https://api.linear.app/graphql \
             -H "Content-Type: application/json" \
             -H "Authorization: $LINEAR_API_KEY" \
-            -d "$PAYLOAD")
+            -d "$PAYLOAD" 2>&1) || { echo "curl failed: $RESPONSE"; exit 1; }
 
-          SUCCESS=$(echo "$RESPONSE" | jq -r '.data.projectUpdateCreate.success // false')
+          SUCCESS=$(printf '%s' "$RESPONSE" | jq -r '.data.projectUpdateCreate.success // false')
           if [ "$SUCCESS" = "true" ]; then
-            URL=$(echo "$RESPONSE" | jq -r '.data.projectUpdateCreate.projectUpdate.url')
+            URL=$(printf '%s' "$RESPONSE" | jq -r '.data.projectUpdateCreate.projectUpdate.url')
             echo "Posted Linear project update: $URL"
           else
             echo "Failed to post Linear update:"
-            echo "$RESPONSE" | jq .
+            printf '%s' "$RESPONSE" | jq .
             exit 1
           fi
