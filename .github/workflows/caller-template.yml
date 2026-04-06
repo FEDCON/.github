@@ -1,0 +1,9 @@
+name: Notify Linear
+on:
+  push:
+    branches: [main]
+jobs:
+  notify:
+    uses: FEDCON/.github/.github/workflows/notify-linear.yml@main
+    secrets:
+      LINEAR_API: ${{ secrets.LINEAR_API }}

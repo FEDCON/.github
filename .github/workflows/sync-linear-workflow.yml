@@ -1,0 +1,59 @@
+name: Sync Linear Workflow to All Repos
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Monday 6AM UTC (2AM ET)
+  workflow_dispatch:  # Manual trigger
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check and add workflow to repos missing it
+        env:
+          GH_TOKEN: ${{ secrets.FEDCON_ADMIN_PAT }}
+          LINEAR_API: ${{ secrets.LINEAR_API }}
+        run: |
+          WORKFLOW_CONTENT=$(base64 < .github/workflows/caller-template.yml)
+
+          # Get all active FEDCON repos
+          REPOS=$(gh repo list FEDCON --limit 200 --json name,isArchived --jq '.[] | select(.isArchived == false) | .name')
+
+          # Skip infrastructure repos that don't need Linear notifications
+          SKIP="^\.github$|^claude-config$|^claude-plugins$|^fedcon-brain$|^fedcon-skills-bundle$|^public-assets$|^advisor-playbook-app$|^billing-cap$|^playwright-tools$|^lukes-skills$"
+
+          ADDED=0
+          EXISTED=0
+          SKIPPED=0
+
+          echo "$REPOS" | while IFS= read -r repo; do
+            if echo "$repo" | grep -qE "$SKIP"; then
+              SKIPPED=$((SKIPPED + 1))
+              continue
+            fi
+
+            # Check if workflow exists
+            if gh api "repos/FEDCON/$repo/contents/.github/workflows/notify-linear.yml" --silent 2>/dev/null; then
+              EXISTED=$((EXISTED + 1))
+              continue
+            fi
+
+            # Add workflow file
+            if gh api "repos/FEDCON/$repo/contents/.github/workflows/notify-linear.yml" \
+              -X PUT \
+              -f message="Add Linear project notification workflow (auto-synced)" \
+              -f content="$WORKFLOW_CONTENT" \
+              --silent 2>/dev/null; then
+              echo "Added workflow to: $repo"
+              ADDED=$((ADDED + 1))
+
+              # Set the LINEAR_API secret
+              gh secret set LINEAR_API --repo "FEDCON/$repo" --body "$LINEAR_API" 2>/dev/null || echo "  Warning: failed to set secret on $repo"
+            else
+              echo "Failed to add workflow to: $repo"
+            fi
+          done
+
+          echo "Sync complete. Added: $ADDED"
