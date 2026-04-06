@@ -1,0 +1,170 @@
+name: Notify Linear Project
+
+on:
+  workflow_call:
+    inputs:
+      trigger_type:
+        description: "push or deploy"
+        type: string
+        default: "push"
+      deploy_status:
+        description: "success, failure, or cancelled"
+        type: string
+        default: "success"
+    secrets:
+      LINEAR_API_KEY:
+        required: true
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post update to Linear project
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          COMMIT_SHA: ${{ github.sha }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+          COMMIT_AUTHOR: ${{ github.event.head_commit.author.name }}
+          COMMIT_URL: ${{ github.event.head_commit.url }}
+          TRIGGER_TYPE: ${{ inputs.trigger_type }}
+          DEPLOY_STATUS: ${{ inputs.deploy_status }}
+        run: |
+          # Repo-to-Linear-project mapping
+          PROJECT_ID=$(echo '{
+            "engagement-log-generator": "d63b1faa-741a-41c3-a49b-5e8c80ce86c7",
+            "hubspot-prospect-mcp": "d63b1faa-741a-41c3-a49b-5e8c80ce86c7",
+            "meet-recording-sync": "d63b1faa-741a-41c3-a49b-5e8c80ce86c7",
+            "highergov-cloud-sync": "d63b1faa-741a-41c3-a49b-5e8c80ce86c7",
+            "highergov-csv-downloader": "d63b1faa-741a-41c3-a49b-5e8c80ce86c7",
+            "highergov-opportunity-matcher": "d63b1faa-741a-41c3-a49b-5e8c80ce86c7",
+            "naics-keyword-bridging": "d63b1faa-741a-41c3-a49b-5e8c80ce86c7",
+            "cap-statement-generator": "d63b1faa-741a-41c3-a49b-5e8c80ce86c7",
+            "cap-statement-generator-cloud": "d63b1faa-741a-41c3-a49b-5e8c80ce86c7",
+            "cap-statement-outputs": "d63b1faa-741a-41c3-a49b-5e8c80ce86c7",
+            "consulting-reports-automated": "d63b1faa-741a-41c3-a49b-5e8c80ce86c7",
+            "client-websites": "d63b1faa-741a-41c3-a49b-5e8c80ce86c7",
+            "fedcon-proposal-skills": "d63b1faa-741a-41c3-a49b-5e8c80ce86c7",
+            "luke-proposals": "d63b1faa-741a-41c3-a49b-5e8c80ce86c7",
+            "hubspot-automations": "9d4c86dd-72ed-4cb6-8fb6-db34ec54613e",
+            "hubspot-apps": "9d4c86dd-72ed-4cb6-8fb6-db34ec54613e",
+            "fedcon-it": "9d4c86dd-72ed-4cb6-8fb6-db34ec54613e",
+            "overnight-tasks": "9d4c86dd-72ed-4cb6-8fb6-db34ec54613e",
+            "hubspot-sync": "9d4c86dd-72ed-4cb6-8fb6-db34ec54613e",
+            "customer-folder-creator": "9d4c86dd-72ed-4cb6-8fb6-db34ec54613e",
+            "fronter-aircall-sync": "9d4c86dd-72ed-4cb6-8fb6-db34ec54613e",
+            "fedcon.com": "d30d73cd-9a72-42e7-b479-04e455046494",
+            "fedcon-marketing": "d30d73cd-9a72-42e7-b479-04e455046494",
+            "nmi-subscription-payments": "d30d73cd-9a72-42e7-b479-04e455046494",
+            "voice-intel": "63db4e9d-041c-4324-9e75-87a5f7eccf83",
+            "pitch-analysis": "63db4e9d-041c-4324-9e75-87a5f7eccf83",
+            "client-management": "44c5926c-69b0-4b19-80f6-f97727942b98",
+            "leads-pipeline": "d139b2b5-1bb5-4af6-b71d-cd4992df187c",
+            "discovery-app": "9cedb713-978e-4200-8848-e4eb47969f90",
+            "prospect-deck-generator": "9cedb713-978e-4200-8848-e4eb47969f90",
+            "lead-request-bot": "15fb6c4f-1fc1-45d7-baca-f7ec48730ef4",
+            "sales-dashboard": "7c442b6b-1335-4660-b34f-be6a94d5bc1f",
+            "campaign-builder": "2b159180-6f7b-4340-8cc3-efb4072fedcd",
+            "flagship-2026": "2b159180-6f7b-4340-8cc3-efb4072fedcd",
+            "aircall-queue-priority": "66a10302-b537-483c-a860-c6bd7c9d1c0f",
+            "busylight-aircall": "66a10302-b537-483c-a860-c6bd7c9d1c0f",
+            "presence-sync": "66a10302-b537-483c-a860-c6bd7c9d1c0f",
+            "fedbot": "b3addf98-fcd5-4685-bd8d-26c959f51d3c",
+            "fleet-ops": "d31278c5-e5b1-42f0-bf56-2121b0b50db4",
+            "activity-monitor": "d31278c5-e5b1-42f0-bf56-2121b0b50db4",
+            "screen-share-daemon": "d31278c5-e5b1-42f0-bf56-2121b0b50db4",
+            "drive-watchdog": "30fb1b55-73af-4d0c-b2d4-b82ce46f2cb2",
+            "github-monitor": "30fb1b55-73af-4d0c-b2d4-b82ce46f2cb2",
+            "workspace-activity": "30fb1b55-73af-4d0c-b2d4-b82ce46f2cb2"
+          }' | jq -r --arg repo "$REPO_NAME" '.[$repo] // empty')
+
+          if [ -z "$PROJECT_ID" ]; then
+            echo "Repo '$REPO_NAME' not mapped to a Linear project — skipping"
+            exit 0
+          fi
+
+          SHORT_SHA="${COMMIT_SHA:0:7}"
+          FIRST_LINE=$(echo "$COMMIT_MSG" | head -1)
+
+          # Check for [linear] prefix — enriched update
+          if echo "$FIRST_LINE" | grep -qi '^\[linear\]'; then
+            NOTE=$(echo "$FIRST_LINE" | sed 's/^\[linear\]\s*//i')
+            BODY=$(cat <<EOF
+          ## Update: ${REPO_NAME}
+
+          **Author:** ${COMMIT_AUTHOR}
+          **Commit:** \`${SHORT_SHA}\`
+
+          ### Note
+          ${NOTE}
+
+          [View commit](${COMMIT_URL})
+
+          ---
+          *Project update from GitHub Actions*
+          EOF
+            )
+            HEALTH="onTrack"
+
+          elif [ "$TRIGGER_TYPE" = "deploy" ]; then
+            if [ "$DEPLOY_STATUS" = "success" ]; then
+              STATUS_TEXT="Deployed successfully"
+              HEALTH="onTrack"
+            else
+              STATUS_TEXT="Deploy FAILED"
+              HEALTH="atRisk"
+            fi
+            BODY=$(cat <<EOF
+          ## Deploy: ${REPO_NAME}
+
+          **Status:** ${STATUS_TEXT}
+          **Author:** ${COMMIT_AUTHOR}
+          **Commit:** \`${SHORT_SHA}\` — ${FIRST_LINE}
+
+          [View commit](${COMMIT_URL})
+
+          ---
+          *Automated deploy update from GitHub Actions*
+          EOF
+            )
+
+          else
+            BODY=$(cat <<EOF
+          ## Commit: ${REPO_NAME}
+
+          **Author:** ${COMMIT_AUTHOR}
+          **Commit:** \`${SHORT_SHA}\` — ${FIRST_LINE}
+
+          [View commit](${COMMIT_URL})
+
+          ---
+          *Automated commit update from GitHub Actions*
+          EOF
+            )
+            HEALTH="onTrack"
+          fi
+
+          # Post to Linear
+          QUERY='mutation($input: ProjectUpdateCreateInput!) { projectUpdateCreate(input: $input) { success projectUpdate { id url } } }'
+
+          PAYLOAD=$(jq -n \
+            --arg query "$QUERY" \
+            --arg projectId "$PROJECT_ID" \
+            --arg body "$BODY" \
+            --arg health "$HEALTH" \
+            '{query: $query, variables: {input: {projectId: $projectId, body: $body, health: $health}}}')
+
+          RESPONSE=$(curl -s -X POST https://api.linear.app/graphql \
+            -H "Content-Type: application/json" \
+            -H "Authorization: $LINEAR_API_KEY" \
+            -d "$PAYLOAD")
+
+          SUCCESS=$(echo "$RESPONSE" | jq -r '.data.projectUpdateCreate.success // false')
+          if [ "$SUCCESS" = "true" ]; then
+            URL=$(echo "$RESPONSE" | jq -r '.data.projectUpdateCreate.projectUpdate.url')
+            echo "Posted Linear project update: $URL"
+          else
+            echo "Failed to post Linear update:"
+            echo "$RESPONSE" | jq .
+            exit 1
+          fi

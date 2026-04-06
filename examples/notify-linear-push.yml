@@ -1,0 +1,10 @@
+# Add this to any repo: .github/workflows/notify-linear.yml
+# Posts commit updates to the corresponding Linear project on push to main.
+name: Notify Linear
+on:
+  push:
+    branches: [main]
+jobs:
+  notify:
+    uses: FEDCON/.github/.github/workflows/notify-linear.yml@main
+    secrets: inherit

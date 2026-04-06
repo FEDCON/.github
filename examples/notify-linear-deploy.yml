@@ -1,0 +1,13 @@
+# Add this job to an existing deploy.yml workflow.
+# Posts deploy status (success/failure) to the corresponding Linear project.
+#
+# Example — add after your deploy job:
+#
+#   notify-linear:
+#     needs: deploy
+#     if: always()
+#     uses: FEDCON/.github/.github/workflows/notify-linear.yml@main
+#     with:
+#       trigger_type: deploy
+#       deploy_status: ${{ needs.deploy.result }}
+#     secrets: inherit
