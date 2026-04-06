@@ -75,13 +75,13 @@ jobs:
             echo "ERROR: Payload is empty — jq likely failed"
             exit 1
           fi
-          printf '%s' "$PAYLOAD" > /tmp/linear-payload.json
-          cat /tmp/linear-payload.json | head -c 100
-          echo ""
-          RESPONSE=$(curl -s -X POST https://api.linear.app/graphql \
+          COMPACT=$(printf '%s' "$PAYLOAD" | jq -c .)
+          printf '%s' "$COMPACT" > /tmp/linear-payload.json
+          echo "File size: $(wc -c < /tmp/linear-payload.json)"
+          RESPONSE=$(curl -sS https://api.linear.app/graphql \
             -H 'Content-Type: application/json' \
             -H "Authorization: ${LINEAR_API_KEY}" \
-            -d @/tmp/linear-payload.json)
+            -d "$COMPACT" 2>&1) || true
           echo "Response: $RESPONSE"
 
           SUCCESS=$(printf '%s' "$RESPONSE" | jq -r '.data.projectUpdateCreate.success // false')
