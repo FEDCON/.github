@@ -85,4 +85,14 @@ jobs:
       - name: Post to Linear API
         env:
           LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
-        run: python3 dotgithub/.github/scripts/post-linear-update.py
+        run: |
+          python3 -c "
+          import os
+          k = os.environ['LINEAR_API_KEY']
+          print(f'Key length: {len(k)}')
+          print(f'Key starts with: {k[:8]}...')
+          print(f'Key repr bytes: {repr(k[-5:])}')
+          print(f'Has newline: {chr(10) in k}')
+          print(f'Has cr: {chr(13) in k}')
+          "
+          python3 dotgithub/.github/scripts/post-linear-update.py
