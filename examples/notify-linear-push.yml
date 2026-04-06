@@ -7,4 +7,5 @@ on:
 jobs:
   notify:
     uses: FEDCON/.github/.github/workflows/notify-linear.yml@main
-    secrets: inherit
+    secrets:
+      LINEAR_API: ${{ secrets.LINEAR_API }}

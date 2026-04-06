@@ -10,4 +10,5 @@
 #     with:
 #       trigger_type: deploy
 #       deploy_status: ${{ needs.deploy.result }}
-#     secrets: inherit
+#     secrets:
+      LINEAR_API: ${{ secrets.LINEAR_API }}

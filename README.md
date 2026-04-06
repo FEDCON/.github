@@ -25,7 +25,8 @@ on:
 jobs:
   notify:
     uses: FEDCON/.github/.github/workflows/notify-linear.yml@main
-    secrets: inherit
+    secrets:
+      LINEAR_API: ${{ secrets.LINEAR_API }}
 ```
 
 **Usage — deploy notifications (add to existing deploy.yml):**
@@ -38,7 +39,8 @@ jobs:
     with:
       trigger_type: deploy
       deploy_status: ${{ needs.deploy.result }}
-    secrets: inherit
+    secrets:
+      LINEAR_API: ${{ secrets.LINEAR_API }}
 ```
 
 **Usage — enriched project notes:**
@@ -56,4 +58,9 @@ The mapping is maintained in `.github/workflows/notify-linear.yml`. Edit it when
 
 | Secret | Scope | Purpose |
 |--------|-------|---------|
-| `LINEAR_API_KEY` | Org-level, all repos | Linear API authentication |
+| `LINEAR_API` | Per-repo (GitHub Free plan limitation) | Linear API authentication |
+
+**Note:** GitHub Free orgs can't share org secrets with private repos. Set `LINEAR_API` on each repo:
+```bash
+gh secret set LINEAR_API --repo FEDCON/<repo-name>
+```

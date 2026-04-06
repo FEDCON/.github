@@ -69,14 +69,11 @@ jobs:
               '{query: $q, variables: {input: {projectId: $pid, health: $h, body: ("## Commit: " + $repo + "\n\n**Author:** " + $author + "\n**Commit:** `" + $sha + "` — " + $msg + "\n\n[View commit](" + $url + ")\n\n---\n*Automated commit update from GitHub Actions*")}}}')
           fi
 
-          echo "Posting to Linear project: $PROJECT_ID"
-          echo "Payload length: ${#PAYLOAD}"
           if [ -z "$PAYLOAD" ]; then
-            echo "ERROR: Payload is empty — jq likely failed"
+            echo "ERROR: Payload is empty"
             exit 1
           fi
           printf '%s' "$PAYLOAD" | jq -c . > /tmp/linear-payload.json
-          echo "File size: $(wc -c < /tmp/linear-payload.json)"
       - name: Checkout .github repo for scripts
         uses: actions/checkout@v4
         with:
@@ -85,14 +82,4 @@ jobs:
       - name: Post to Linear API
         env:
           LINEAR_API: ${{ secrets.LINEAR_API }}
-        run: |
-          python3 -c "
-          import os
-          k = os.environ['LINEAR_API']
-          print(f'Key length: {len(k)}')
-          print(f'Key starts with: {k[:8]}...')
-          print(f'Key repr bytes: {repr(k[-5:])}')
-          print(f'Has newline: {chr(10) in k}')
-          print(f'Has cr: {chr(13) in k}')
-          "
-          python3 dotgithub/.github/scripts/post-linear-update.py
+        run: python3 dotgithub/.github/scripts/post-linear-update.py
