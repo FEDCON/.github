@@ -76,10 +76,15 @@ jobs:
             exit 1
           fi
           printf '%s' "$PAYLOAD" > /tmp/linear-payload.json
-          HTTP_CODE=$(curl -s -o /tmp/linear-response.json -w '%{http_code}' -X POST https://api.linear.app/graphql \
+          echo "API key length: ${#LINEAR_API_KEY}"
+          echo "Testing curl connectivity..."
+          curl -s -o /dev/null -w 'test_http_code=%{http_code}\n' https://api.linear.app/graphql || echo "curl basic test failed: $?"
+          echo "Sending payload..."
+          HTTP_CODE=$(curl -s -o /tmp/linear-response.json -w '%{http_code}' \
+            -X POST "https://api.linear.app/graphql" \
             -H "Content-Type: application/json" \
-            -H "Authorization: $LINEAR_API_KEY" \
-            -d @/tmp/linear-payload.json)
+            -H "Authorization: ${LINEAR_API_KEY}" \
+            --data-binary @/tmp/linear-payload.json) || echo "curl exit code: $?"
           RESPONSE=$(cat /tmp/linear-response.json)
           echo "HTTP status: $HTTP_CODE"
 
