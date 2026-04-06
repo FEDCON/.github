@@ -12,7 +12,7 @@ on:
         type: string
         default: "success"
     secrets:
-      LINEAR_API_KEY:
+      LINEAR_API:
         required: false
 
 jobs:
@@ -21,7 +21,7 @@ jobs:
     steps:
       - name: Post update to Linear project
         env:
-          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          LINEAR_API: ${{ secrets.LINEAR_API }}
           REPO_NAME: ${{ github.event.repository.name }}
           COMMIT_SHA: ${{ github.sha }}
           COMMIT_MSG: ${{ github.event.head_commit.message }}
@@ -84,11 +84,11 @@ jobs:
           path: dotgithub
       - name: Post to Linear API
         env:
-          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          LINEAR_API: ${{ secrets.LINEAR_API }}
         run: |
           python3 -c "
           import os
-          k = os.environ['LINEAR_API_KEY']
+          k = os.environ['LINEAR_API']
           print(f'Key length: {len(k)}')
           print(f'Key starts with: {k[:8]}...')
           print(f'Key repr bytes: {repr(k[-5:])}')
