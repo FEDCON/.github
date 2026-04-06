@@ -73,10 +73,17 @@ jobs:
             '{query: $query, variables: {input: {projectId: $projectId, body: $body, health: $health}}}')
 
           echo "Posting to Linear project: $PROJECT_ID"
-          RESPONSE=$(curl -sf -X POST https://api.linear.app/graphql \
+          HTTP_CODE=$(curl -s -o /tmp/linear-response.json -w '%{http_code}' -X POST https://api.linear.app/graphql \
             -H "Content-Type: application/json" \
-            -H "Authorization: $LINEAR_API_KEY" \
-            -d "$PAYLOAD" 2>&1) || { echo "curl failed: $RESPONSE"; exit 1; }
+            -H "Authorization: Bearer $LINEAR_API_KEY" \
+            -d "$PAYLOAD")
+          RESPONSE=$(cat /tmp/linear-response.json)
+          echo "HTTP status: $HTTP_CODE"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "curl failed with HTTP $HTTP_CODE"
+            echo "$RESPONSE"
+            exit 1
+          fi
 
           SUCCESS=$(printf '%s' "$RESPONSE" | jq -r '.data.projectUpdateCreate.success // false')
           if [ "$SUCCESS" = "true" ]; then
