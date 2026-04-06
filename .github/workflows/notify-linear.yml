@@ -76,10 +76,12 @@ jobs:
             exit 1
           fi
           printf '%s' "$PAYLOAD" > /tmp/linear-payload.json
+          cat /tmp/linear-payload.json | head -c 100
+          echo ""
           RESPONSE=$(curl -s -X POST https://api.linear.app/graphql \
             -H 'Content-Type: application/json' \
             -H "Authorization: ${LINEAR_API_KEY}" \
-            --data-binary '@/tmp/linear-payload.json')
+            -d @/tmp/linear-payload.json)
           echo "Response: $RESPONSE"
 
           SUCCESS=$(printf '%s' "$RESPONSE" | jq -r '.data.projectUpdateCreate.success // false')
