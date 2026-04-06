@@ -73,6 +73,9 @@ jobs:
             '{query: $query, variables: {input: {projectId: $projectId, body: $body, health: $health}}}')
 
           echo "Posting to Linear project: $PROJECT_ID"
+          echo "Body length: ${#BODY}"
+          echo "Payload preview:"
+          echo "$PAYLOAD" | head -c 200
           HTTP_CODE=$(curl -s -o /tmp/linear-response.json -w '%{http_code}' -X POST https://api.linear.app/graphql \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $LINEAR_API_KEY" \
