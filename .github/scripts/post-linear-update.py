@@ -3,7 +3,7 @@
 import urllib.request, json, sys, os
 
 payload = open('/tmp/linear-payload.json', 'rb').read()
-api_key = os.environ['LINEAR_API_KEY']
+api_key = os.environ['LINEAR_API_KEY'].strip()
 
 req = urllib.request.Request(
     'https://api.linear.app/graphql',
