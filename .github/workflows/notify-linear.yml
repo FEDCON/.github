@@ -42,12 +42,15 @@ jobs:
           SHORT_SHA="${COMMIT_SHA:0:7}"
           FIRST_LINE=$(printf '%s' "$COMMIT_MSG" | head -1)
           HEALTH="onTrack"
+          QUERY='mutation($input: ProjectUpdateCreateInput!) { projectUpdateCreate(input: $input) { success projectUpdate { id url } } }'
 
-          # Build markdown body using jq for safe JSON string handling
+          # Build the full payload in jq (avoids bash string escaping issues)
           if printf '%s' "$FIRST_LINE" | grep -qi '^\[linear\]'; then
             NOTE=$(printf '%s' "$FIRST_LINE" | sed 's/^\[linear\] *//I')
-            BODY=$(printf '## Update: %s\n\n**Author:** %s\n**Commit:** `%s`\n\n### Note\n%s\n\n[View commit](%s)\n\n---\n*Project update from GitHub Actions*' \
-              "$REPO_NAME" "$COMMIT_AUTHOR" "$SHORT_SHA" "$NOTE" "$COMMIT_URL")
+            PAYLOAD=$(jq -n --arg q "$QUERY" --arg pid "$PROJECT_ID" --arg h "$HEALTH" \
+              --arg repo "$REPO_NAME" --arg author "$COMMIT_AUTHOR" --arg sha "$SHORT_SHA" \
+              --arg note "$NOTE" --arg url "$COMMIT_URL" \
+              '{query: $q, variables: {input: {projectId: $pid, health: $h, body: ("## Update: " + $repo + "\n\n**Author:** " + $author + "\n**Commit:** `" + $sha + "`\n\n### Note\n" + $note + "\n\n[View commit](" + $url + ")\n\n---\n*Project update from GitHub Actions*")}}}')
           elif [ "$TRIGGER_TYPE" = "deploy" ]; then
             if [ "$DEPLOY_STATUS" = "success" ]; then
               STATUS_TEXT="Deployed successfully"
@@ -55,35 +58,27 @@ jobs:
               STATUS_TEXT="Deploy FAILED"
               HEALTH="atRisk"
             fi
-            BODY=$(printf '## Deploy: %s\n\n**Status:** %s\n**Author:** %s\n**Commit:** `%s` — %s\n\n[View commit](%s)\n\n---\n*Automated deploy update from GitHub Actions*' \
-              "$REPO_NAME" "$STATUS_TEXT" "$COMMIT_AUTHOR" "$SHORT_SHA" "$FIRST_LINE" "$COMMIT_URL")
+            PAYLOAD=$(jq -n --arg q "$QUERY" --arg pid "$PROJECT_ID" --arg h "$HEALTH" \
+              --arg repo "$REPO_NAME" --arg author "$COMMIT_AUTHOR" --arg sha "$SHORT_SHA" \
+              --arg msg "$FIRST_LINE" --arg url "$COMMIT_URL" --arg status "$STATUS_TEXT" \
+              '{query: $q, variables: {input: {projectId: $pid, health: $h, body: ("## Deploy: " + $repo + "\n\n**Status:** " + $status + "\n**Author:** " + $author + "\n**Commit:** `" + $sha + "` — " + $msg + "\n\n[View commit](" + $url + ")\n\n---\n*Automated deploy update from GitHub Actions*")}}}')
           else
-            BODY=$(printf '## Commit: %s\n\n**Author:** %s\n**Commit:** `%s` — %s\n\n[View commit](%s)\n\n---\n*Automated commit update from GitHub Actions*' \
-              "$REPO_NAME" "$COMMIT_AUTHOR" "$SHORT_SHA" "$FIRST_LINE" "$COMMIT_URL")
+            PAYLOAD=$(jq -n --arg q "$QUERY" --arg pid "$PROJECT_ID" --arg h "$HEALTH" \
+              --arg repo "$REPO_NAME" --arg author "$COMMIT_AUTHOR" --arg sha "$SHORT_SHA" \
+              --arg msg "$FIRST_LINE" --arg url "$COMMIT_URL" \
+              '{query: $q, variables: {input: {projectId: $pid, health: $h, body: ("## Commit: " + $repo + "\n\n**Author:** " + $author + "\n**Commit:** `" + $sha + "` — " + $msg + "\n\n[View commit](" + $url + ")\n\n---\n*Automated commit update from GitHub Actions*")}}}')
           fi
 
-          # Post to Linear GraphQL API
-          QUERY='mutation($input: ProjectUpdateCreateInput!) { projectUpdateCreate(input: $input) { success projectUpdate { id url } } }'
-
-          PAYLOAD=$(jq -n \
-            --arg query "$QUERY" \
-            --arg projectId "$PROJECT_ID" \
-            --arg body "$BODY" \
-            --arg health "$HEALTH" \
-            '{query: $query, variables: {input: {projectId: $projectId, body: $body, health: $health}}}')
-
           echo "Posting to Linear project: $PROJECT_ID"
-          echo "Body length: ${#BODY}"
-          echo "Payload preview:"
-          echo "$PAYLOAD" | head -c 200
           HTTP_CODE=$(curl -s -o /tmp/linear-response.json -w '%{http_code}' -X POST https://api.linear.app/graphql \
             -H "Content-Type: application/json" \
-            -H "Authorization: Bearer $LINEAR_API_KEY" \
+            -H "Authorization: $LINEAR_API_KEY" \
             -d "$PAYLOAD")
           RESPONSE=$(cat /tmp/linear-response.json)
           echo "HTTP status: $HTTP_CODE"
+
           if [ "$HTTP_CODE" != "200" ]; then
-            echo "curl failed with HTTP $HTTP_CODE"
+            echo "Request failed with HTTP $HTTP_CODE"
             echo "$RESPONSE"
             exit 1
           fi
@@ -93,7 +88,7 @@ jobs:
             URL=$(printf '%s' "$RESPONSE" | jq -r '.data.projectUpdateCreate.projectUpdate.url')
             echo "Posted Linear project update: $URL"
           else
-            echo "Failed to post Linear update:"
+            echo "Linear API error:"
             printf '%s' "$RESPONSE" | jq .
             exit 1
           fi
