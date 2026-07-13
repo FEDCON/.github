@@ -1,18 +1,13 @@
 name: Dependabot auto-merge (reusable)
 
-# Shared reusable workflow: auto-merges dependabot PRs that are safe.
-# Patch / minor / security bumps: enable native auto-merge (GitHub merges once
-# the repo's required checks pass, so CI still gates every merge).
-# Major version bumps: left for a human, with a comment saying why.
-# Called by a tiny per-repo caller that triggers on the repo's pull_request events.
+# Auto-merges dependabot PRs safely with ZERO friction on human PRs: it waits for
+# the PR's own checks (whatever they are: build-and-test, Vercel, etc.) and merges
+# only if they all pass. No repo-wide required check, so human PRs are never gated.
+# Major version bumps are left for a human. If a PR has no real checks, it is left
+# for a human rather than merged blind.
 
 on:
-  workflow_call:
-    inputs:
-      merge-method:
-        description: "merge, squash, or rebase"
-        type: string
-        default: "squash"
+  workflow_call: {}
 
 permissions:
   contents: write
@@ -31,13 +26,31 @@ jobs:
         if: steps.meta.outputs.update-type == 'version-update:semver-major'
         env:
           URL: ${{ github.event.pull_request.html_url }}
+          NAMES: ${{ steps.meta.outputs.dependency-names }}
+          NEWV: ${{ steps.meta.outputs.new-version }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh pr comment "$URL" --body "Auto-merge skipped: this is a MAJOR version bump (${{ steps.meta.outputs.dependency-names }} to ${{ steps.meta.outputs.new-version }}). Major bumps can break things, so this one is left for a human to review and merge. Patch, minor, and security updates auto-merge once CI passes."
+          gh pr comment "$URL" --body "Auto-merge skipped, MAJOR version bump ($NAMES to $NEWV). Majors can break things, so a human should review this. Patch, minor, and security updates auto-merge once checks pass."
 
-      - name: Enable auto-merge for patch / minor / security
+      - name: Wait for the PR checks, then merge if all green
         if: steps.meta.outputs.update-type != 'version-update:semver-major'
         env:
-          URL: ${{ github.event.pull_request.html_url }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
-        run: gh pr merge --auto --${{ inputs.merge-method }} "$URL"
+        run: |
+          for i in $(seq 1 60); do
+            data=$(gh pr checks "$PR" --repo "$REPO" --json name,bucket 2>/dev/null || echo '[]')
+            others=$(echo "$data" | jq '[.[] | select((.name | startswith("Dependabot auto-merge")) | not)]')
+            total=$(echo "$others" | jq 'length')
+            failed=$(echo "$others" | jq '[.[] | select(.bucket=="fail" or .bucket=="cancel")] | length')
+            pending=$(echo "$others" | jq '[.[] | select(.bucket=="pending")] | length')
+            passed=$(echo "$others" | jq '[.[] | select(.bucket=="pass" or .bucket=="skipping")] | length')
+            if [ "$failed" -gt 0 ]; then echo "a check failed, leaving for a human"; exit 0; fi
+            if [ "$pending" -gt 0 ]; then echo "checks pending ($passed/$total done), waiting"; sleep 20; continue; fi
+            if [ "$total" -gt 0 ] && [ "$passed" -eq "$total" ]; then
+              echo "all $total checks green, merging"; gh pr merge "$PR" --repo "$REPO" --squash --delete-branch; exit 0
+            fi
+            echo "no real checks yet, waiting"; sleep 20
+          done
+          echo "timed out or no checks to gate on, leaving for a human"; exit 0
