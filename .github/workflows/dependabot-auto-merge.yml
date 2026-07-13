@@ -1,10 +1,9 @@
 name: Dependabot auto-merge (reusable)
 
-# Auto-merges dependabot PRs safely with ZERO friction on human PRs: it waits for
-# the PR's own "build-and-test" check (the CI added to every governed repo) and
-# merges only if it passes. No repo-wide required check, so human PRs are never
-# gated. Major version bumps are left for a human. A repo without a build-and-test
-# check is left for a human (the wait times out), never merged blind.
+# Enables GitHub native auto-merge on dependabot patch/minor/security PRs. GitHub
+# itself holds the PR until the repo's required check (build-and-test, or the repo's
+# CI check) passes, then merges. The workflow does not read check state, so there is
+# no token-permission dependency. Major bumps are left for a human.
 
 on:
   workflow_call: {}
@@ -30,29 +29,11 @@ jobs:
           NEWV: ${{ steps.meta.outputs.new-version }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh pr comment "$URL" --body "Auto-merge skipped, MAJOR version bump ($NAMES to $NEWV). Majors can break things, so a human should review this. Patch, minor, and security updates auto-merge once build-and-test passes."
+          gh pr comment "$URL" --body "Auto-merge skipped, MAJOR version bump ($NAMES to $NEWV). Majors can break things, so a human should review this. Patch, minor, and security updates auto-merge once CI passes."
 
-      - name: Wait for build-and-test, then merge if it passes
+      - name: Enable native auto-merge for patch / minor / security
         if: steps.meta.outputs.update-type != 'version-update:semver-major'
         env:
-          PR: ${{ github.event.pull_request.number }}
-          REPO: ${{ github.repository }}
+          URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ github.token }}
-        run: |
-          for i in $(seq 1 60); do
-            bucket=$(gh pr checks "$PR" --repo "$REPO" --json name,bucket --jq '.[] | select(.name=="build-and-test") | .bucket' 2>/dev/null | head -1)
-            case "$bucket" in
-              pass)
-                echo "build-and-test passed, merging"
-                gh pr merge "$PR" --repo "$REPO" --squash --delete-branch
-                exit 0 ;;
-              fail|cancel)
-                echo "build-and-test $bucket, leaving for a human"
-                exit 0 ;;
-              *)
-                echo "build-and-test not done yet (state: ${bucket:-not-started}), waiting"
-                sleep 20 ;;
-            esac
-          done
-          echo "timed out waiting for build-and-test, leaving for a human"
-          exit 0
+        run: gh pr merge --auto --squash "$URL"
