@@ -1,10 +1,10 @@
 name: Dependabot auto-merge (reusable)
 
 # Auto-merges dependabot PRs safely with ZERO friction on human PRs: it waits for
-# the PR's own checks (whatever they are: build-and-test, Vercel, etc.) and merges
-# only if they all pass. No repo-wide required check, so human PRs are never gated.
-# Major version bumps are left for a human. If a PR has no real checks, it is left
-# for a human rather than merged blind.
+# the PR's own "build-and-test" check (the CI added to every governed repo) and
+# merges only if it passes. No repo-wide required check, so human PRs are never
+# gated. Major version bumps are left for a human. A repo without a build-and-test
+# check is left for a human (the wait times out), never merged blind.
 
 on:
   workflow_call: {}
@@ -30,9 +30,9 @@ jobs:
           NEWV: ${{ steps.meta.outputs.new-version }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh pr comment "$URL" --body "Auto-merge skipped, MAJOR version bump ($NAMES to $NEWV). Majors can break things, so a human should review this. Patch, minor, and security updates auto-merge once checks pass."
+          gh pr comment "$URL" --body "Auto-merge skipped, MAJOR version bump ($NAMES to $NEWV). Majors can break things, so a human should review this. Patch, minor, and security updates auto-merge once build-and-test passes."
 
-      - name: Wait for the PR checks, then merge if all green
+      - name: Wait for build-and-test, then merge if it passes
         if: steps.meta.outputs.update-type != 'version-update:semver-major'
         env:
           PR: ${{ github.event.pull_request.number }}
@@ -40,17 +40,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           for i in $(seq 1 60); do
-            data=$(gh pr checks "$PR" --repo "$REPO" --json name,bucket 2>/dev/null || echo '[]')
-            others=$(echo "$data" | jq '[.[] | select((.name | startswith("Dependabot auto-merge")) | not)]')
-            total=$(echo "$others" | jq 'length')
-            failed=$(echo "$others" | jq '[.[] | select(.bucket=="fail" or .bucket=="cancel")] | length')
-            pending=$(echo "$others" | jq '[.[] | select(.bucket=="pending")] | length')
-            passed=$(echo "$others" | jq '[.[] | select(.bucket=="pass" or .bucket=="skipping")] | length')
-            if [ "$failed" -gt 0 ]; then echo "a check failed, leaving for a human"; exit 0; fi
-            if [ "$pending" -gt 0 ]; then echo "checks pending ($passed/$total done), waiting"; sleep 20; continue; fi
-            if [ "$total" -gt 0 ] && [ "$passed" -eq "$total" ]; then
-              echo "all $total checks green, merging"; gh pr merge "$PR" --repo "$REPO" --squash --delete-branch; exit 0
-            fi
-            echo "no real checks yet, waiting"; sleep 20
+            bucket=$(gh pr checks "$PR" --repo "$REPO" --json name,bucket --jq '.[] | select(.name=="build-and-test") | .bucket' 2>/dev/null | head -1)
+            case "$bucket" in
+              pass)
+                echo "build-and-test passed, merging"
+                gh pr merge "$PR" --repo "$REPO" --squash --delete-branch
+                exit 0 ;;
+              fail|cancel)
+                echo "build-and-test $bucket, leaving for a human"
+                exit 0 ;;
+              *)
+                echo "build-and-test not done yet (state: ${bucket:-not-started}), waiting"
+                sleep 20 ;;
+            esac
           done
-          echo "timed out or no checks to gate on, leaving for a human"; exit 0
+          echo "timed out waiting for build-and-test, leaving for a human"
+          exit 0
