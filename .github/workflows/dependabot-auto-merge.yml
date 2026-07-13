@@ -1,0 +1,43 @@
+name: Dependabot auto-merge (reusable)
+
+# Shared reusable workflow: auto-merges dependabot PRs that are safe.
+# Patch / minor / security bumps: enable native auto-merge (GitHub merges once
+# the repo's required checks pass, so CI still gates every merge).
+# Major version bumps: left for a human, with a comment saying why.
+# Called by a tiny per-repo caller that triggers on the repo's pull_request events.
+
+on:
+  workflow_call:
+    inputs:
+      merge-method:
+        description: "merge, squash, or rebase"
+        type: string
+        default: "squash"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@v2
+
+      - name: Hold major version bumps for a human
+        if: steps.meta.outputs.update-type == 'version-update:semver-major'
+        env:
+          URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr comment "$URL" --body "Auto-merge skipped: this is a MAJOR version bump (${{ steps.meta.outputs.dependency-names }} to ${{ steps.meta.outputs.new-version }}). Major bumps can break things, so this one is left for a human to review and merge. Patch, minor, and security updates auto-merge once CI passes."
+
+      - name: Enable auto-merge for patch / minor / security
+        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        env:
+          URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr merge --auto --${{ inputs.merge-method }} "$URL"
