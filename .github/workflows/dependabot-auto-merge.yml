@@ -86,7 +86,11 @@ jobs:
             echo "::error::Could not read the changed-file list for PR $PR. Refusing to merge."
             exit 1
           fi
-          dirs=$(printf '%s\n' "$files" | grep -E '(^|/)package(-lock)?\.json$' | sed -E 's#[^/]+$##' | sort -u || true)
+          # The trailing `s#^$#./#` matters: a manifest at the repo root strips to the
+          # EMPTY string, which the check below then read as "no manifest changed" and
+          # refused to validate. Every root-level npm repo hit it (fedbot, presence-sync,
+          # hubspot-automations). Root is now "./", which is a real directory.
+          dirs=$(printf '%s\n' "$files" | grep -E '(^|/)package(-lock)?\.json$' | sed -E 's#[^/]+$##; s#^$#./#' | sort -u || true)
           if [ -z "$dirs" ]; then
             echo "This PR changes no package.json / package-lock.json, so there is"
             echo "nothing this job can validate. Failing closed: a human should look."
