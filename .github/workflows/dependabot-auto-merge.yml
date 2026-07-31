@@ -56,7 +56,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0   # need the base commit for the changed-files diff below
 
       - name: Setup Node
         if: steps.meta.outputs.update-type != 'version-update:semver-major'
@@ -67,22 +66,27 @@ jobs:
       - name: Install the changed npm tree(s) from the bumped lockfile
         if: steps.meta.outputs.update-type != 'version-update:semver-major'
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          # Derive the affected dir(s) from the FILES THIS PR CHANGES, not from
-          # fetch-metadata's `directory` output: fetch-metadata reports a COMMON
-          # ANCESTOR for grouped bumps, which resolves to a directory that has no
-          # manifest in it. The changed-file list is correct for single and grouped
-          # bumps alike, and scoping to the touched tree means one tree's manifest
-          # rot never blocks another's updates.
-          dirs=$(
-            git diff --name-only "$BASE_SHA" "$HEAD_SHA" \
-              | grep -E '(^|/)package(-lock)?\.json$' \
-              | sed -E 's#[^/]+$##' \
-              | sort -u || true
-          )
+          # The changed-file list comes from the API, NOT from `git diff base..head`.
+          # A git diff needs both commits present in the runner's checkout, and when
+          # base.sha is not fetched the diff errors, the `|| true` swallows it, and
+          # the job concludes "nothing changed" on a PR that plainly changed a
+          # lockfile. That is a silent no-validation path, so it is gone. Observed
+          # on fedbot#14, 2026-07-31.
+          #
+          # Derive the tree from the changed manifest rather than fetch-metadata's
+          # `directory` output: that reports a COMMON ANCESTOR for grouped bumps,
+          # which resolves to a directory holding no manifest at all.
+          files=$(gh pr view "$PR" --repo "$REPO" --json files --jq '.files[].path')
+          if [ -z "$files" ]; then
+            echo "::error::Could not read the changed-file list for PR $PR. Refusing to merge."
+            exit 1
+          fi
+          dirs=$(printf '%s\n' "$files" | grep -E '(^|/)package(-lock)?\.json$' | sed -E 's#[^/]+$##' | sort -u || true)
           if [ -z "$dirs" ]; then
             echo "This PR changes no package.json / package-lock.json, so there is"
             echo "nothing this job can validate. Failing closed: a human should look."
