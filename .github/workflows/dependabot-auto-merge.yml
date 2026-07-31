@@ -2,11 +2,31 @@ name: Dependabot auto-merge (reusable)
 
 # Enables GitHub native auto-merge on dependabot patch/minor/security PRs. GitHub
 # itself holds the PR until the repo's required check (build-and-test, or the repo's
-# CI check) passes, then merges. The workflow does not read check state, so there is
-# no token-permission dependency. Major bumps are left for a human.
+# CI check) passes, then merges. Major bumps are left for a human.
+#
+# VALIDATION (added 2026-07-31, Brad): the workflow used to enable auto-merge with
+# no gate of its own, which is correct only in a repo that already runs a check on
+# every pull_request. Most FEDCON repos do not, so `--auto` there merges instantly
+# with nothing validating the bump. Rather than force a repo-wide CI gate on every
+# human PR too, this workflow now validates the bump ITSELF, and only for dependabot
+# PRs: it installs the affected npm tree(s) from the bumped lockfile and, where the
+# package declares one, parses the entrypoint. A tree that will not install cannot
+# merge. Human PRs are untouched.
+#
+# This is the same gate claude-config has run since 2026-07-23, lifted here so every
+# caller gets it instead of one repo.
+#
+# Repos with no npm tree touched by the PR fail closed (nothing validated, nothing
+# merged) and wait for a human.
 
 on:
-  workflow_call: {}
+  workflow_call:
+    inputs:
+      node-version:
+        description: 'Node major to validate with. Match the repo runtime.'
+        required: false
+        type: string
+        default: '22'
 
 permissions:
   contents: write
@@ -29,11 +49,76 @@ jobs:
           NEWV: ${{ steps.meta.outputs.new-version }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh pr comment "$URL" --body "Auto-merge skipped, MAJOR version bump ($NAMES to $NEWV). Majors can break things, so a human should review this. Patch, minor, and security updates auto-merge once CI passes."
+          gh pr comment "$URL" --body "Auto-merge skipped, MAJOR version bump ($NAMES to $NEWV). Majors can break things, so a human should review this. Patch, minor, and security updates auto-merge once the bumped tree installs cleanly."
+
+      - name: Checkout PR head
+        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0   # need the base commit for the changed-files diff below
+
+      - name: Setup Node
+        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Install the changed npm tree(s) from the bumped lockfile
+        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # Derive the affected dir(s) from the FILES THIS PR CHANGES, not from
+          # fetch-metadata's `directory` output: fetch-metadata reports a COMMON
+          # ANCESTOR for grouped bumps, which resolves to a directory that has no
+          # manifest in it. The changed-file list is correct for single and grouped
+          # bumps alike, and scoping to the touched tree means one tree's manifest
+          # rot never blocks another's updates.
+          dirs=$(
+            git diff --name-only "$BASE_SHA" "$HEAD_SHA" \
+              | grep -E '(^|/)package(-lock)?\.json$' \
+              | sed -E 's#[^/]+$##' \
+              | sort -u || true
+          )
+          if [ -z "$dirs" ]; then
+            echo "This PR changes no package.json / package-lock.json, so there is"
+            echo "nothing this job can validate. Failing closed: a human should look."
+            exit 1
+          fi
+          # here-string, NOT a pipe, so a failure inside the loop exits THIS shell.
+          # Piped into `while`, an exit 1 only kills the subshell and the step would
+          # still pass, silently merging an unvalidated bump.
+          while IFS= read -r dir; do
+            [ -n "$dir" ] || continue
+            if [ ! -f "${dir}package-lock.json" ]; then
+              echo "No lockfile at ${dir:-repo root}; leaving for manual review."
+              exit 1
+            fi
+            echo "::group::validate ${dir:-repo root}"
+            ( cd "$dir" && npm ci --no-audit --no-fund )
+            # node --check parses the entrypoint without executing it, so this needs
+            # no secrets and no network. Only when package.json declares a `main`;
+            # a repo that does not (a Next app, say) is validated by the install.
+            main=$(node -e "process.stdout.write(require('./${dir}package.json').main || '')")
+            if [ -n "$main" ] && [ -f "${dir}${main}" ]; then
+              node --check "${dir}${main}"
+              echo "ok: ${dir}${main}"
+            else
+              echo "ok: ${dir:-repo root} installs (no main entrypoint declared)"
+            fi
+            echo "::endgroup::"
+          done <<< "$dirs"
 
       - name: Enable native auto-merge for patch / minor / security
         if: steps.meta.outputs.update-type != 'version-update:semver-major'
         env:
           URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ github.token }}
+        # --auto rather than a one-shot merge: a dependabot batch races itself and a
+        # one-shot fails with "Base branch was modified". GitHub queues --auto and
+        # retries when the base moves. The install step above is the gate; we only
+        # reach here on green.
         run: gh pr merge --auto --squash "$URL"
