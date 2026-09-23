@@ -17,7 +17,7 @@ on:
 
 jobs:
   notify:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.FEDCON_LINUX_RUNNER || 'ubuntu-latest' }}
     steps:
       - name: Post update to Linear project
         id: build
