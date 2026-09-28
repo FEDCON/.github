@@ -1,0 +1,1003 @@
+name: Merge finalize-ready PRs on green
+
+# THE CANONICAL COPY LIVES IN claude-config AT
+#   components/repo-workflows/finalize-ready-merge.yml
+# Do not hand-edit this file in a repo it was installed into — edit the canonical copy and
+# re-run components/scripts/install-merge-machinery.sh, which reinstalls every repo.
+#
+# WHY THIS EXISTS (2026-08-13). The four disposition labels were seeded into every FEDCON
+# repo by seed-disposition-labels.sh, and pr-disposition-required.sh blocks any `gh pr
+# create` that does not carry one. So every session dutifully labels its PR finalize-ready
+# — "done, verified, a human should merge this" — and in almost every repo NOTHING WAS
+# LISTENING. Only claude-config had a workflow that acted on the label. In
+# prospect-management, one of the busiest repos, every single finalize-ready PR was merged
+# by Brad clicking the button by hand. The label scheme shipped org-wide; the machinery
+# that makes it mean something shipped in one repo. This is that machinery, made generic.
+#
+# WHAT IT MERGES: non-draft PRs into the default branch, labelled finalize-ready. ANYONE
+# who can open a PR here merges their own work once its checks are green. Brad, 2026-08-26:
+# "If someone is trying to merge a PR on code they are working on then they should be able
+# to do that."
+#
+# The single exception is a PR touching `.github/**` — the automation itself — which still
+# needs a publisher (Brad or Dylan), because this workflow runs from the PR's own merge
+# commit and would otherwise let a PR rewrite this gate and merge itself under the new rule.
+#
+# This REPLACES the 2026-08-13 two-name publisher allowlist. That version declined every
+# other person's work and exited GREEN while doing it: no red mark, no notification, and the
+# finalize-ready label still reading "ready". It held 24 finished PRs for an average of two
+# weeks, three of them fixes for defects live on production at the time.
+#
+# WHAT GATES IT: every OTHER check on the PR must succeed first. This job waits for them
+# rather than trusting GitHub's `--auto`, because `--auto` only queues when the repo has
+# REQUIRED status checks configured; with none — which is most FEDCON repos — GitHub merges
+# instantly and the checks that were about to run never gate anything. A repo with no
+# checks at all merges immediately, which is exactly what a human clicking merge does.
+#
+# SAFETY, stated accurately. `pull_request` workflows run from the MERGE COMMIT of the PR
+# branch and the base, NOT from the base alone — that is `pull_request_target`. So a PR CAN
+# introduce or alter this file and have its own version run against itself. Verified
+# empirically on 2026-08-13: claude-plugins #239, which added the workflow, was merged by
+# the workflow it was adding.
+#
+# What actually holds the line is therefore the gate below, not the file's location: a
+# non-publisher PR touching `.github/**` does not self-merge, so nobody can widen this rule
+# in the same PR that relies on it. That carve-out is the entire security boundary now, and
+# it is about the FILES a PR touches, not about who wrote it. If this repo ever accepts PRs
+# from forks or outside contributors, convert the trigger to `pull_request_target` — which
+# runs from the base branch — BEFORE relying on any of it.
+#
+#
+# 2026-08-27, ROUND ONE: THE EMPTY-CHECK-LIST HOLE. The paragraph above was true about intent and
+# false about behaviour. The wait loop asked `gh pr checks` once, a few seconds after the
+# PR's HEAD COMMIT appeared, and read the empty list it got back as "nothing pending,
+# nothing failed". It merged before a single check had registered. That is not a rare
+# race: it was the normal path. Re-derived from the API on 2026-08-27, correcting the
+# numbers this file shipped with that morning: in the seven days to 2026-08-27T14:48Z this
+# workflow merged 61 PRs in opportunity-matrix, 38 of them before their gate had reported
+# anything, and 8 of those 38 with `core-tests` RED. Those merges dispatched 29 deploy runs
+# across all five of the repo's Cloud Run services.
+#
+# THE CLOCK STARTS AT THE HEAD COMMIT, NOT AT `gh pr create`. The first write-up of this
+# said PRs merged "11 to 14 seconds after creation", and #394 is the counter-example that
+# matters: created 2026-08-26T06:16:04Z and merged 2026-08-27T02:15:07Z, twenty hours
+# later - ten seconds after a push moved its head to bda7ef8b at 02:14:57Z. The workflow
+# fires on `synchronize` as well as `opened`, so a long-lived PR re-arms the gate on every
+# push and is exposed exactly as much as a fresh one. Measured against the right clock, all
+# 38 merged 8 to 12 seconds after their head commit first appeared to Actions, median 10.
+#
+# An empty check list is now treated as NOT green. A repo says what must pass by putting
+# check names in `.github/required-checks.txt` on its default branch (or by configuring
+# branch protection). A repo that declares nothing gets an observation fallback that
+# still refuses an empty list when the repo is known to run CI on pull requests. A repo
+# with genuinely no pull_request CI merges immediately, as before.
+#
+# Failing closed is the point: a PR that waits is strictly better than a bad change
+# deploying. Every refusal exits non-zero and comments on the PR, so it is visible.
+#
+#
+# 2026-08-27, ROUND TWO: FIXING THAT FIX. An adversarial pass found two things wrong with
+# it, and correcting our own work is the whole job here - a half-correct gate propagated to
+# 51 repos is the exact failure this effort exists to stop.
+#
+#   A. The fallback still had an empty-list-is-green path. It decided "does this repo have
+#      CI" from the Actions run history alone, filtered on event=pull_request - a DOWNSTREAM
+#      VIEW, and one that reads empty in at least four states where the repo plainly does
+#      run CI: the workflow has never run yet (the PR that ADDS CI; 14 FEDCON repos carrying
+#      this gate have no PR CI today and are one commit from it), the trigger is
+#      `pull_request_target` (which this file's own header tells fork-taking repos to
+#      adopt, and which an event=pull_request query cannot see), the 100-run window is
+#      saturated by this very workflow (it fires on five event types where a test workflow
+#      fires on three; measured on opportunity-matrix's full 650-run history, the window
+#      peaked at 67% self on 2026-08-19), or Actions retention aged the runs out. The repo's
+#      own workflow FILES on the default branch are now the source of truth and the run
+#      history is corroboration. Either one saying "CI" means CI; either one being
+#      unreadable means unknown, and unknown refuses.
+#
+#   B. It failed closed with NO WAY OUT. A PR that legitimately produces zero checks - a
+#      `paths:` filter that excludes its files, a renamed job, a required check whose
+#      workflow was deleted - was refused, commented on, and left red, permanently, on
+#      every re-run. Nobody could land it at all, which is worse than the bug it replaced.
+#      Every refusal now names three exits, one of which the PR author can take alone: the
+#      `merge-gate-override` label waives checks that NEVER REPORTED. It never waives a
+#      check that reported a failure - that is a result, not an absence - and both the run
+#      log and a PR comment record who waived what. Refusals also carry a
+#      `merge-gate-blocked` label, so a stuck PR is visible in a list and not only in a log.
+
+# Drafts are skipped. Reversible: delete this file.
+
+on:
+  pull_request:
+    # `labeled` matters: a PR opened as redlines-in-flight and later finished flips its
+    # label with no other event, and would otherwise sit forever looking ready.
+    # `unlabeled` is deliberately absent — removing a label should not trigger a merge.
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
+  workflow_dispatch:
+    # How the hourly drain reaches this workflow, and it MUST be a dispatch rather than a
+    # push. The drain pushes with GITHUB_TOKEN, and a `synchronize` produced by a bot push
+    # does not run: GitHub parks it as `action_required`, waiting for a human to click
+    # approve — the exact intervention the drain exists to remove. Verified on
+    # fedcon-marketing #22, 2026-08-13: the drain nudged it correctly, and the resulting
+    # merge run sat unapproved. workflow_dispatch through the API IS allowed with
+    # GITHUB_TOKEN and runs immediately, which is why the drain dispatches instead.
+    inputs:
+      pr:
+        description: PR number to evaluate
+        required: true
+        type: string
+
+# ONE RUN PER PR (2026-09-02). Creating a PR and then adding the label fires TWO triggers,
+# `opened` and `labeled`, so two runs start for the same PR. Both sit through the 120s settle
+# window, both then call mergePullRequest, and the loser gets
+#   GraphQL: Merge already in progress (mergePullRequest)
+# which this workflow classifies as "a reason retrying will not fix" and exits 1. Observed on
+# 2026-09-02 across nine repos at once: every PR logged "merging, as a human clicking merge
+# would", every merge failed, and every PR stayed OPEN with a red X and no explanation a
+# person would recognise. The failure looks like a broken gate; it is two copies of a working
+# one racing each other.
+#
+# cancel-in-progress is correct rather than merely safe: the newer trigger has the newer state
+# (the label that was just added), so the run worth keeping is always the last one.
+concurrency:
+  group: finalize-ready-merge-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+  statuses: read
+  # actions: READ, and it is load bearing. The gate asks this repo whether it has ever run
+  # a workflow on a pull request, which corroborates what the workflow FILES say. Without
+  # this scope that call 403s. The gate treats a failed read as "CI exists" and refuses, so
+  # losing the scope makes PRs wait rather than merge blind, but the correct state is to
+  # have it.
+  #
+  # WRITE since 2026-08-27, so a repo may add a post-merge step that DISPATCHES a deploy.
+  # GitHub does not run `push`-triggered workflows for a commit pushed with GITHUB_TOKEN —
+  # the same rule documented above for `synchronize` — so a repo whose deploy is
+  # deploy-on-merge never deploys once this workflow is doing the merging. sales-dashboard
+  # hit exactly that on 2026-08-27: the pipeline went deploy-on-merge, and the next two
+  # merges did not deploy. A drift check meant to catch it was push-triggered too, so the
+  # bot merge silenced the fixer and the thing it fixes together. Only the merger knows a
+  # merge happened. Read is still all the gate itself needs; this buys the dispatch.
+  actions: write
+  # issues: WRITE, for the `merge-gate-blocked` / `merge-gate-override` labels. Labels are
+  # an Issues API resource, so `pull-requests: write` does not cover creating one. Losing
+  # this scope costs the labels only; the gate's verdict is unaffected.
+  issues: write
+
+jobs:
+  merge-on-green:
+    # Nothing is filtered here any more. On a dispatch there is no `github.event.pull_request`
+    # to read, so draft / base / label / author are ALL re-read from the API in the first
+    # step, for both entry paths. One place doing the checks, and it cannot disagree with
+    # itself depending on how the workflow was reached.
+    runs-on: ${{ vars.FEDCON_LINUX_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - name: Decide whether this PR may merge without a human
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # On a dispatch the payload carries no PR, so fall back to the input.
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
+          REPO: ${{ github.repository }}
+        # Two ways through.
+        #
+        # 1. A PUBLISHER (Brad or Dylan) — merges on green, as before.
+        #
+        # 2. ANYONE ELSE, but ONLY if every file the PR touches is session bookkeeping:
+        #    a checkpoint, a STAMP, or a session summary. Brad, 2026-08-13: of the seven
+        #    teammate PRs sitting on him, four were pure bookkeeping — Tyler's and Rachel's
+        #    checkpoints and Philip's client session summary. Reviewing those is not review,
+        #    it is filing. Real code from a teammate still waits for him.
+        #
+        #    The allowlist is also the security boundary, and it is worth being precise
+        #    about why. `pull_request` runs the workflow from the MERGE COMMIT, so a PR
+        #    ships its own version of this file. A teammate PR that edits anything under
+        #    .github/ fails the path allowlist and is left for review — which is what stops
+        #    a teammate from widening this rule in the same PR that uses it. That holds
+        #    because FEDCON repos are private with trusted committers and take no fork PRs.
+        #    If either of those ever changes, move this trigger to `pull_request_target`,
+        #    which runs from the base branch, BEFORE relying on any of it.
+        run: |
+          set -uo pipefail
+          echo "may_merge=false" >> "$GITHUB_OUTPUT"   # default; overwritten only on a pass
+
+          # Read the PR's state from the API, never from the event payload: on a dispatch
+          # there is no payload, and on a pull_request event the payload can be a few
+          # seconds stale. One source of truth for both entry paths.
+          read -r AUTHOR DRAFT BASE STATE <<<"$(gh pr view "$PR" --repo "$REPO" \
+            --json author,isDraft,baseRefName,state \
+            --jq '"\(.author.login) \(.isDraft) \(.baseRefName) \(.state)"')"
+          DEFAULT_BRANCH=$(gh api "/repos/$REPO" --jq .default_branch)
+          LABELS=$(gh pr view "$PR" --repo "$REPO" --json labels --jq '[.labels[].name]|join(",")')
+
+          [ "$STATE" = "OPEN" ]        || { echo "PR $PR is $STATE, nothing to do"; exit 0; }
+          [ "$DRAFT" = "false" ]       || { echo "PR $PR is a draft, holding"; exit 0; }
+          [ "$BASE" = "$DEFAULT_BRANCH" ] || { echo "PR $PR targets $BASE, not $DEFAULT_BRANCH"; exit 0; }
+          case ",$LABELS," in
+            *,finalize-ready,*) ;;
+            *) echo "PR $PR is not finalize-ready (labels: $LABELS)"; exit 0 ;;
+          esac
+
+          files=$(gh pr diff "$PR" --repo "$REPO" --name-only)
+
+          # An empty diff is a rule violation wearing a PR's clothes: the work was committed
+          # straight to the default branch and a PR opened on top of it. Say so LOUDLY rather
+          # than exiting quietly green, which is how commission-engine #13 got re-evaluated
+          # and declined over 300 times with nobody ever seeing one of them.
+          if [ -z "$files" ]; then
+            echo "::error::PR $PR has an EMPTY diff — its branch adds nothing to $DEFAULT_BRANCH."
+            echo "::error::That means the work was pushed to $DEFAULT_BRANCH directly. Close this PR."
+            echo "may_merge=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # THE MERGE MACHINERY ITSELF is the one thing a PR may not wave through on its own
+          # authority. `pull_request` runs this workflow from the MERGE COMMIT, so a PR ships
+          # its own version of this file and could otherwise rewrite this very gate and then
+          # merge itself under the rewritten rule. Publishers may still land .github changes;
+          # everyone else's go to a human. This is the whole security boundary, and it is
+          # about the FILES, not the person.
+          touches_github=""
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            case "$f" in .github/*) touches_github="${touches_github}${f} " ;; esac
+          done <<< "$files"
+
+          if [ -n "$touches_github" ] \
+             && [ "$AUTHOR" != "BradFEDCON" ] && [ "$AUTHOR" != "fedcon-dylan" ]; then
+            echo "::warning::PR $PR by $AUTHOR changes the automation itself: $touches_github"
+            echo "::warning::Automation changes are the one class that still needs a human merge."
+            gh pr comment "$PR" --repo "$REPO" --body \
+              "This PR changes files under \`.github/\` — the merge automation itself — so it does not self-merge. Everything else merges on green. A publisher (Brad or Dylan) needs to merge this one." \
+              2>/dev/null || true
+            echo "may_merge=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Brad, 2026-08-26, verbatim: "If someone is trying to merge a PR on code they are
+          # working on then they should be able to do that."
+          #
+          # This replaces a two-name publisher allowlist (Brad + Dylan) under which EVERY
+          # other person's finished work was declined — and the job then exited green, with
+          # no red mark, no notification, and the finalize-ready label still reading "ready".
+          # Measured 2026-08-26: 24 finished PRs held that way, average wait about two weeks,
+          # including three defects live on production systems with tested fixes attached
+          # (nine advisors unable to save any edit in the portal; the nightly HigherGov import
+          # discarding a full day on one bad vendor record; disqualified calls quarantined
+          # where no human could release them).
+          #
+          # These repos are private, take no fork PRs, and only org members with write access
+          # can open a PR at all — so authorship is already an access decision GitHub made.
+          # Re-deciding it here bought nothing and cost two weeks per person.
+          echo "$AUTHOR: merges own work on green (see the .github/ carve-out above)"
+          echo "may_merge=true" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for this PR's other checks, then squash-merge
+        if: steps.gate.outputs.may_merge == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
+          REPO: ${{ github.repository }}
+          SELF: ${{ github.job }}
+        run: |
+          set -uo pipefail
+
+          # --- Gate: the checks that must report on this PR must have REPORTED success. ---
+          #
+          # 2026-08-27, replacing a one-shot `gh pr checks` read that took an EMPTY list as
+          # "nothing is pending" and merged. An empty list is exactly what you get in the
+          # first seconds after a HEAD COMMIT appears, before GitHub has registered any
+          # check run, and this workflow starts within about three seconds of that. So the
+          # wait loop never waited: it read zero pending, printed "all other checks green
+          # (or none exist)" and merged.
+          #
+          # Measured live on opportunity-matrix #413: head commit 80762887 first seen by
+          # Actions at 04:28:56Z, merged 04:29:05Z - nine seconds - and `core-tests`, the
+          # job tests.yml calls the blocking gate, finished at 04:29:46Z with conclusion
+          # FAILURE, 41 seconds AFTER the merge. Over the seven days to 2026-08-27T14:48Z
+          # this workflow merged 61 PRs in that repo, 38 of them before their gate had
+          # reported anything at all, and 8 of those 38 with the gate RED.
+          #
+          # An empty check list is no longer green. The rule is in the docstring below.
+          # `|| gate_rc=$?` rather than leaning on `set -e`: the refusal must be explicit,
+          # because everything after this point merges the PR.
+          gate_rc=0
+          python3 - <<'MERGEGATE' || gate_rc=$?
+          """Refuse to merge unless this PR's checks have actually REPORTED success.
+
+          THE RULE
+
+            1. If the repo DECLARES its required checks, every one of them must have reported
+               and be success. Declared means, in priority order:
+                 a. branch protection required_status_checks.contexts on the default branch, or
+                 b. .github/required-checks.txt on the DEFAULT BRANCH, one check name per line,
+                    blank lines and lines starting with # ignored.
+               Read from the default branch, never from the PR, so a PR cannot delete its own
+               gate. This is the precise path and needs no timers: a required check that has not
+               reported yet simply is not success, so the job keeps waiting.
+
+            2. If the repo declares nothing, fall back to observation. Wait a settle window for
+               checks to register, then require that every check on the head commit completed and
+               passed. If this repo runs ANY workflow on a pull request and NOTHING reported on
+               this commit after the settle window, refuse. That is the empty-list case: it means
+               the checks have not started yet, not that there are none.
+
+            3. A repo with no pull-request CI at all still merges straight away, which is exactly
+               what a human clicking the button does.
+
+            4. Every refusal names its exits, and one of them is reachable by the PR author alone:
+               the `merge-gate-override` label waives checks that never reported. It never waives a
+               check that reported a FAILURE. Failing closed is right; failing closed with no way
+               out is not, and that is what the first version of this gate shipped.
+
+          Every refusal exits non-zero, so the run goes red and the PR stays open with the reason
+          on it, plus a `merge-gate-blocked` label so it is visible in a PR list and not only in a
+          log nobody opens.
+          """
+
+          import base64
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+          import time
+
+          REPO = os.environ["REPO"]
+          PR = os.environ["PR"]
+          SELF = os.environ["SELF"]
+          SELF_WORKFLOW = ".github/workflows/finalize-ready-merge.yml"
+
+          OVERRIDE_LABEL = "merge-gate-override"
+          BLOCKED_LABEL = "merge-gate-blocked"
+
+          # Overridable so the gate can be exercised against fixtures without a 30 minute
+          # test run. Nothing sets these in CI; the defaults are the real policy.
+          SETTLE_SECONDS = int(os.environ.get("GATE_SETTLE_SECONDS", 120))
+          TIMEOUT_SECONDS = int(os.environ.get("GATE_TIMEOUT_SECONDS", 30 * 60))
+          POLL_SECONDS = int(os.environ.get("GATE_POLL_SECONDS", 20))
+          RETRY_SECONDS = int(os.environ.get("GATE_RETRY_SECONDS", 3))
+
+          # A conclusion that is not one of these is not a pass.
+          PASSING = {"success", "skipped", "neutral"}
+
+          # Triggers that put a check on a pull request. `pull_request` alone is not the set:
+          # a repo that takes fork PRs is told, in this file's own header, to move to
+          # `pull_request_target` - and a `pull_request_target` run is reported by the Actions
+          # API under event `pull_request_target`, so an `event=pull_request` query never sees it.
+          PR_TRIGGERS = ("pull_request", "pull_request_target", "merge_group")
+
+
+          def api(path, missing=None, attempts=3):
+              """GET one endpoint.
+
+              Returns the parsed body; `missing` on a clean 404; None on any other failure.
+              That distinction is the whole point: "this repo has no such file" is an ANSWER,
+              "the call failed" is not, and reading the second as the first is how a broken read
+              turns into a merge.
+
+              A non-404 failure is RETRIED, because a refusal here is terminal by design and one 502
+              should not cost a human. unstick-finalize-ready.yml, the hourly drain, deliberately
+              counts `conclusion: failure` as a real verdict and will not re-nudge it ("a failure
+              means the checks said no, and re-nudging that would just loop"), so nothing else in the
+              estate retries this. Without the retry a transient blip refuses the PR, labels it, and
+              waits for somebody to push or waive it.
+              """
+              for attempt in range(attempts):
+                  proc = subprocess.run(
+                      ["gh", "api", "-H", "Accept: application/vnd.github+json", path],
+                      capture_output=True,
+                      text=True,
+                  )
+                  if proc.returncode == 0:
+                      try:
+                          return json.loads(proc.stdout)
+                      except json.JSONDecodeError:
+                          return None
+                  if "404" in proc.stderr or "Not Found" in proc.stderr:
+                      return missing
+                  if attempt + 1 < attempts:
+                      print("(%s failed, retrying: %s)" % (path, proc.stderr.strip()[:120]))
+                      time.sleep(RETRY_SECONDS * (attempt + 1))
+              return None
+
+
+          def quiet(argv):
+              """Run a gh command whose failure must never take the gate down with it."""
+              return subprocess.run(argv, capture_output=True, text=True).returncode == 0
+
+
+          LABEL_COLOURS = {
+              BLOCKED_LABEL: ("B60205", "The merge gate refused this PR. Its comment says how to fix it."),
+              OVERRIDE_LABEL: ("FBCA04", "Waive checks that never reported. Never waives a check that failed."),
+          }
+
+
+          def ensure_labels():
+              """Create both gate labels if the repo lacks them.
+
+              The override label is created HERE, on the refusal, and not only when it is used:
+              `gh pr edit --add-label` cannot apply a label a repo does not have, so a refusal that
+              names an exit nobody can take is the same dead end this is fixing.
+              """
+              for name, (color, desc) in LABEL_COLOURS.items():
+                  quiet(["gh", "api", "--method", "POST", "/repos/%s/labels" % REPO,
+                         "-f", "name=%s" % name, "-f", "color=%s" % color, "-f", "description=%s" % desc])
+
+
+          def set_label(name, on):
+              """Add or remove one label. Best effort: labels are visibility, never the verdict."""
+              flag = "--add-label" if on else "--remove-label"
+              quiet(["gh", "pr", "edit", PR, "--repo", REPO, flag, name])
+
+
+          def comment(kind, body):
+              """Comment once per kind per head commit, so a re-run does not re-spam the PR - and a
+              refusal comment does not silence the override-merge comment on the same commit."""
+              marker = "<!-- merge-gate:%s:%s -->" % (kind, HEAD)
+              seen = api("/repos/%s/issues/%s/comments?per_page=100" % (REPO, PR), missing=[]) or []
+              if any(marker in (c.get("body") or "") for c in seen):
+                  return
+              proc = subprocess.run(
+                  ["gh", "pr", "comment", PR, "--repo", REPO, "--body", body + "\n\n" + marker],
+                  capture_output=True,
+                  text=True,
+              )
+              if proc.returncode != 0:
+                  print("(could not comment on the PR: %s)" % proc.stderr.strip()[:200])
+
+
+          def exits(missing_names=()):
+              """The ways this PR can still reach green. A refusal without these is a dead end."""
+              named = (" (" + ", ".join(sorted(missing_names)) + ")") if missing_names else ""
+              return (
+                  "### How this PR gets to green\n"
+                  "1. **Make the checks run and pass.** Push a commit. The gate re-evaluates on every "
+                  "push, and merges as soon as the checks report success.\n"
+                  "2. **Fix the declaration.** If `.github/required-checks.txt` on `%s` names a check "
+                  "this repo no longer produces%s - a renamed job, a `paths:` filter that excludes this "
+                  "PR's files, a workflow that was deleted - correct that file **on the default branch**. "
+                  "The gate reads it from there, never from this branch, so the fix cannot ride in this "
+                  "PR.\n"
+                  "3. **Waive it deliberately.** Add the `%s` label to this PR - it exists on this repo, "
+                  "the gate just created it. The gate then merges without the checks that never reported, "
+                  "and says so in the run log and here. It still refuses if any check REPORTED a failure, "
+                  "so this waives an ABSENT result, never a red one.\n" % (BASE, named, OVERRIDE_LABEL)
+              )
+
+
+          def refuse(headline, detail="", missing_names=()):
+              print("::error::Not merging PR %s. %s" % (PR, headline))
+              if detail:
+                  print(detail)
+              ensure_labels()
+              comment(
+                  "refused",
+                  "This PR is labelled `finalize-ready`, but the merge automation **refused to merge "
+                  "it** because its checks have not reported success.\n\n"
+                  "> %s\n\n%s\n\nHead commit: `%s`\n\n%s"
+                  % (headline, detail, HEAD, exits(missing_names))
+              )
+              set_label(BLOCKED_LABEL, True)
+              sys.exit(1)
+
+
+          def allow(message):
+              """The one way out that is not a refusal. Clears the blocked label if a previous run
+              set it, so a PR that recovers does not keep wearing the mark."""
+              print(message)
+              if BLOCKED_LABEL in LABELS:
+                  set_label(BLOCKED_LABEL, False)
+              sys.exit(0)
+
+
+          pull = api("/repos/%s/pulls/%s" % (REPO, PR))
+          if not pull:
+              print("::error::could not read PR %s from the API" % PR)
+              sys.exit(1)
+          HEAD = pull["head"]["sha"]
+          BASE = pull["base"]["ref"]
+          LABELS = {(lab.get("name") or "") for lab in (pull.get("labels") or [])}
+          OVERRIDE = OVERRIDE_LABEL in LABELS
+          print("head commit: %s" % HEAD)
+
+          # --- What must report ------------------------------------------------------------
+          required = []
+          source = ""
+
+          protection = api("/repos/%s/branches/%s/protection/required_status_checks" % (REPO, BASE))
+          if protection and protection.get("contexts"):
+              required = sorted(set(protection["contexts"]))
+              source = "branch protection on %s" % BASE
+
+          if not required:
+              blob = api("/repos/%s/contents/.github/required-checks.txt?ref=%s" % (REPO, BASE))
+              if blob and blob.get("content"):
+                  text = base64.b64decode(blob["content"]).decode("utf-8", "replace")
+                  required = [
+                      line.strip()
+                      for line in text.splitlines()
+                      if line.strip() and not line.strip().startswith("#")
+                  ]
+                  if required:
+                      source = ".github/required-checks.txt on %s" % BASE
+
+
+          # --- Does this repo run CI on pull requests? --------------------------------------
+          # Only the fallback asks, to tell "this repo has no CI" apart from "this repo has CI and
+          # none of it has started yet" - the two cases the old empty-list read conflated.
+          #
+          # The FIRST version of that fallback asked the Actions run history alone, and that is a
+          # downstream view with at least four ways of being empty while the repo plainly does run
+          # CI: the workflow has never run yet (the PR that ADDS CI is the obvious case, and 14
+          # FEDCON repos carrying this gate have no PR CI today, so they are one commit away from
+          # it); the trigger is `pull_request_target`, which an `event=pull_request` query cannot
+          # see; the 100-run window is saturated by this very workflow, which fires on five event
+          # types where a test workflow fires on three (measured on opportunity-matrix's 650-run
+          # history: the window peaked at 67% self on 2026-08-19); or Actions retention, 90 days by
+          # default and settable to one, has aged the runs out.
+          #
+          # So the repo's own workflow files on the default branch are the source of truth, and the
+          # run history is corroboration. Either saying "CI" means CI. Either being UNREADABLE means
+          # unknown, and unknown refuses.
+
+
+          def _decomment(text):
+              """Drop YAML comments. A `#` opens one only at line start or after whitespace, and
+              not inside a quoted scalar."""
+              out = []
+              for line in text.splitlines():
+                  cut, quote = None, None
+                  for i, ch in enumerate(line):
+                      if quote:
+                          if ch == quote:
+                              quote = None
+                      elif ch in "\"'":
+                          quote = ch
+                      elif ch == "#" and (i == 0 or line[i - 1] in " \t"):
+                          cut = i
+                          break
+                  out.append(line if cut is None else line[:cut])
+              return "\n".join(out)
+
+
+          def declares_pr_trigger(text):
+              """Does this workflow fire on a pull request?
+
+              Reads the top-level `on:` block as TEXT on purpose. YAML 1.1 resolves a bare `on` key
+              to the boolean True, so a parser hands back `{True: ...}` and a naive `cfg["on"]`
+              lookup finds nothing - a silent "no CI here" on a file that plainly says otherwise.
+              """
+              lines = _decomment(text).splitlines()
+              start = next((i for i, l in enumerate(lines) if re.match(r"""^(on|["']on["'])\s*:""", l)), None)
+              if start is None:
+                  return False
+              block = [lines[start]]
+              for line in lines[start + 1:]:
+                  if line.strip() and not line[:1].isspace():
+                      break
+                  block.append(line)
+              block = "\n".join(block)
+              # Matches `on: pull_request`, `on: [push, pull_request]`, and an indented
+              # `pull_request:` key. The trailing group stops `pull_request` matching the first
+              # half of `pull_request_target`, which is listed separately.
+              return any(
+                  re.search(r"(^|[\s\[,:])%s(\s*:|\s*[,\]]|\s*$)" % t, block, re.M) for t in PR_TRIGGERS
+              )
+
+
+          # PATH FILTERS (2026-09-02). A workflow that declares `on.pull_request.paths` does
+          # not run for a PR that touches none of them, so counting it as "CI this repo runs on
+          # pull requests" makes the empty-check-list refusal fire on a PR where no check was
+          # ever going to report. client-websites runs `validate.yml` on `clients/**` only, so a
+          # PR touching just `.github/workflows/**` was refused with "checks have not started"
+          # forever - there were no checks to start. That shape blocks every workflow, docs, or
+          # config PR in any repo whose CI is path-filtered.
+          #
+          # Direction matters: this may only ever REMOVE a workflow from the list, and only when
+          # the filter is read cleanly and plainly excludes this PR. Any doubt - unreadable file,
+          # a filter we cannot parse, a changed-file list we could not fetch - keeps the workflow
+          # in, so the gate stays strict exactly where it is uncertain.
+          def _glob_to_re(g):
+              out, i = [], 0
+              while i < len(g):
+                  c = g[i]
+                  if g.startswith("**/", i):
+                      out.append("(?:.*/)?"); i += 3; continue
+                  if g.startswith("**", i):
+                      out.append(".*"); i += 2; continue
+                  if c == "*":
+                      out.append("[^/]*")
+                  elif c == "?":
+                      out.append("[^/]")
+                  else:
+                      out.append(re.escape(c))
+                  i += 1
+              return re.compile("^" + "".join(out) + "$")
+
+          def _pr_path_filters(text):
+              """(paths, paths_ignore) declared under on.pull_request, or None if unparseable.
+              ([], []) means the trigger exists with no path filter, i.e. it always applies."""
+              lines = _decomment(text).splitlines()
+              start = next((i for i, l in enumerate(lines) if re.match(r"""^(on|["']on["'])\s*:""", l)), None)
+              if start is None:
+                  return None
+              block = []
+              for line in lines[start + 1:]:
+                  if line.strip() and not line[:1].isspace():
+                      break
+                  block.append(line)
+              # find the `pull_request:` key inside the on-block and take its sub-block
+              key = None
+              for i, l in enumerate(block):
+                  if re.match(r"^\s+pull_request\s*:\s*$", l):
+                      key = i; break
+              if key is None:
+                  return ([], [])          # `on: [push, pull_request]` form: no filter possible
+              indent = len(block[key]) - len(block[key].lstrip())
+              sub = []
+              for l in block[key + 1:]:
+                  if l.strip() and (len(l) - len(l.lstrip())) <= indent:
+                      break
+                  sub.append(l)
+              def collect(name):
+                  for i, l in enumerate(sub):
+                      m = re.match(r"^(\s+)%s\s*:\s*(.*)$" % name, l)
+                      if not m:
+                          continue
+                      inline = m.group(2).strip()
+                      if inline.startswith("["):
+                          return [x.strip().strip("'\"") for x in inline.strip("[]").split(",") if x.strip()]
+                      ind = len(m.group(1))
+                      vals = []
+                      for l2 in sub[i + 1:]:
+                          if not l2.strip():
+                              continue
+                          if (len(l2) - len(l2.lstrip())) <= ind:
+                              break
+                          mm = re.match(r"^\s*-\s*(.+?)\s*$", l2)
+                          if not mm:
+                              return None
+                          vals.append(mm.group(1).strip().strip("'\""))
+                      return vals
+                  return []
+              paths, ignore = collect("paths"), collect("paths-ignore")
+              if paths is None or ignore is None:
+                  return None
+              return (paths, ignore)
+
+          _changed_cache = {}
+          def changed_files():
+              """Paths this PR touches, or None if the list could not be read."""
+              if "v" in _changed_cache:
+                  return _changed_cache["v"]
+              out, page = [], 1
+              while page <= 10:
+                  batch = api("/repos/%s/pulls/%s/files?per_page=100&page=%d" % (REPO, PR, page))
+                  if batch is None or not isinstance(batch, list):
+                      _changed_cache["v"] = None
+                      return None
+                  out += [f.get("filename") or "" for f in batch]
+                  if len(batch) < 100:
+                      break
+                  page += 1
+              _changed_cache["v"] = out
+              return out
+
+          def workflow_applies(path, text):
+              """False only when the filter is read cleanly AND excludes every changed file."""
+              try:
+                  filt = _pr_path_filters(text)
+              except Exception:
+                  return True
+              if filt is None:
+                  return True
+              paths, ignore = filt
+              if not paths and not ignore:
+                  return True
+              files = changed_files()
+              if not files:
+                  return True
+              try:
+                  if paths:
+                      pats = [_glob_to_re(g) for g in paths]
+                      if not any(p.match(f) for f in files for p in pats):
+                          print("  %s: on.pull_request.paths matches none of this PR's %d file(s); "
+                                "it will not run, so it is not pending CI" % (path, len(files)))
+                          return False
+                  if ignore:
+                      pats = [_glob_to_re(g) for g in ignore]
+                      if all(any(p.match(f) for p in pats) for f in files):
+                          print("  %s: every changed file is in paths-ignore; it will not run" % path)
+                          return False
+              except Exception:
+                  return True
+              return True
+
+
+          def pr_ci_from_files():
+              """Workflows on the DEFAULT BRANCH that declare a pull-request trigger.
+              [] means genuinely none. None means the read failed and the answer is unknown."""
+              # A clean 404 means the repo has no workflows directory, which is a real answer
+              # (and unreachable in practice: this code is running FROM that directory). Any
+              # other failure is not an answer, and must not become one.
+              listing = api("/repos/%s/contents/.github/workflows?ref=%s" % (REPO, BASE), missing=[])
+              if listing is None:
+                  return None
+              if not isinstance(listing, list):
+                  return []
+              found = []
+              for entry in listing:
+                  name = entry.get("name") or ""
+                  if not name.endswith((".yml", ".yaml")):
+                      continue
+                  path = ".github/workflows/" + name
+                  if path == SELF_WORKFLOW:
+                      continue
+                  # Any failure here is UNKNOWN, including a 404. The listing named this file
+                  # a moment ago, so "not found" means something moved under us, and a file
+                  # we cannot read might be the CI. Unknown refuses; it does not skip.
+                  blob = api("/repos/%s/contents/%s?ref=%s" % (REPO, path, BASE))
+                  if not blob or not blob.get("content"):
+                      return None
+                  body = base64.b64decode(blob["content"]).decode("utf-8", "replace")
+                  if declares_pr_trigger(body) and workflow_applies(path, body):
+                      found.append(path)
+              return sorted(found)
+
+
+          def pr_ci_from_history():
+              """Workflows this repo has actually run on a pull request. None if unreadable."""
+              seen = set()
+              for event in ("pull_request", "pull_request_target"):
+                  runs = api("/repos/%s/actions/runs?event=%s&per_page=100" % (REPO, event))
+                  if runs is None:
+                      return None
+                  for r in runs.get("workflow_runs", []):
+                      if r.get("path") and r.get("path") != SELF_WORKFLOW:
+                          seen.add(r["path"])
+              # A workflow this repo HAS run on some past PR still may not run on THIS one -
+              # same path-filter reasoning as pr_ci_from_files. Read the file to find out; if it
+              # cannot be read, keep it (unknown stays strict).
+              applicable = set()
+              for path in seen:
+                  blob = api("/repos/%s/contents/%s?ref=%s" % (REPO, path, BASE))
+                  if not blob or not blob.get("content"):
+                      applicable.add(path)
+                      continue
+                  body = base64.b64decode(blob["content"]).decode("utf-8", "replace")
+                  if workflow_applies(path, body):
+                      applicable.add(path)
+              return sorted(applicable)
+
+
+          pr_ci_workflows = []
+          if required:
+              print("required checks (%s): %s" % (source, ", ".join(required)))
+          else:
+              files_ci, history_ci = pr_ci_from_files(), pr_ci_from_history()
+              if files_ci is None or history_ci is None:
+                  pr_ci_workflows = ["<unknown: could not read this repo's workflows or its run history>"]
+                  print("this repo declares no required checks, and whether it runs CI on pull "
+                        "requests could NOT be read (files=%s, history=%s). Assuming it does."
+                        % ("unreadable" if files_ci is None else len(files_ci),
+                           "unreadable" if history_ci is None else len(history_ci)))
+              else:
+                  pr_ci_workflows = sorted(set(files_ci) | set(history_ci))
+                  print("this repo declares no required checks; falling back to observation "
+                        "(pull-request workflows: %s -- %d declared on %s, %d seen in run history)"
+                        % (", ".join(pr_ci_workflows) or "none", len(files_ci), BASE, len(history_ci)))
+
+          if OVERRIDE:
+              print("::warning::PR %s carries the `%s` label. Checks that never report will be "
+                    "waived. A check that REPORTS a failure still blocks the merge." % (PR, OVERRIDE_LABEL))
+
+
+          def observe():
+              """Every check and legacy status on the head commit, minus this job's own."""
+              checks = (api("/repos/%s/commits/%s/check-runs?per_page=100" % (REPO, HEAD)) or {}).get(
+                  "check_runs", []
+              )
+              checks = [c for c in checks if c.get("name") != SELF and not (c.get("name") or "").startswith(SELF + " ")]
+              combined = api("/repos/%s/commits/%s/status?per_page=100" % (REPO, HEAD)) or {}
+              statuses = combined.get("statuses", [])
+              return checks, statuses
+
+
+          # --- Wait ------------------------------------------------------------------------
+          started = time.time()
+          while True:
+              checks, statuses = observe()
+
+              reported = {c["name"] for c in checks if c.get("status") == "completed"}
+              reported |= {s["context"] for s in statuses if s.get("state") != "pending"}
+              missing = [name for name in required if name not in reported]
+
+              unfinished = [c["name"] for c in checks if c.get("status") != "completed"]
+              unfinished += [s["context"] for s in statuses if s.get("state") == "pending"]
+
+              elapsed = time.time() - started
+              # With a declared gate the settle window is pointless: a check that has not reported
+              # is already counted as missing. Without one, never conclude "no checks exist" early.
+              settled = bool(required) or elapsed >= SETTLE_SECONDS
+
+              if OVERRIDE:
+                  # A waiver accepts a check that will never report. It does NOT accept merging over
+                  # one that is still running and could still come back red, so this still drains.
+                  if not unfinished:
+                      break
+              elif not missing and not unfinished and settled:
+                  break
+
+              if time.time() - started > TIMEOUT_SECONDS:
+                  window = ("%d minutes" % (TIMEOUT_SECONDS // 60) if TIMEOUT_SECONDS >= 60
+                            else "%d seconds" % TIMEOUT_SECONDS)
+                  refuse(
+                      "its checks did not finish inside %s." % window,
+                      "Still missing: %s\nStill running: %s"
+                      % (", ".join(missing) or "none", ", ".join(sorted(set(unfinished))) or "none"),
+                      missing_names=missing,
+                  )
+
+              waiting = []
+              if missing and not OVERRIDE:
+                  waiting.append("%d required check(s) not reported: %s" % (len(missing), ", ".join(missing)))
+              if unfinished:
+                  waiting.append("%d check(s) still running" % len(set(unfinished)))
+              if not waiting:
+                  waiting.append("settle window (%ds of %ds)" % (int(elapsed), SETTLE_SECONDS))
+              print("waiting on %s" % "; ".join(waiting))
+              time.sleep(POLL_SECONDS)
+
+          # --- Verdict ---------------------------------------------------------------------
+          checks, statuses = observe()
+
+          failed = [c["name"] for c in checks if (c.get("conclusion") or "") not in PASSING]
+          failed += [s["context"] for s in statuses if s.get("state") in ("failure", "error")]
+          if failed:
+              # Deliberately BEFORE the override branch. A waiver covers a missing result, never a
+              # red one; otherwise the label is just a merge button with extra steps.
+              extra = ("\n\n`%s` does not cover this: a check that RAN and FAILED is a result, not an "
+                       "absence." % OVERRIDE_LABEL) if OVERRIDE else ""
+              refuse("these checks did not pass: %s" % ", ".join(sorted(set(failed))), extra)
+
+          green = {c["name"] for c in checks if (c.get("conclusion") or "") in PASSING}
+          green |= {s["context"] for s in statuses if s.get("state") == "success"}
+
+          if OVERRIDE:
+              # Only announce a waiver that actually waived something. If every check reported and
+              # passed, the label changed nothing and the normal path below should say so.
+              waived = ([name for name in required if name not in green] if required
+                        else (["(no check reported at all)"] if not checks and not statuses else []))
+              if waived:
+                  print("::warning::merging PR %s under `%s`. Waived (never reported): %s. Nothing "
+                        "that did report had failed." % (PR, OVERRIDE_LABEL, ", ".join(waived)))
+                  comment(
+                      "overridden",
+                      "Merged under the **`%s`** label: a human waived the checks that never "
+                      "reported.\n\n- Waived (no result): %s\n- Reported and green: %s\n\n"
+                      "Head commit: `%s`\n\nThe gate still verified that nothing which DID report had "
+                      "failed - a waiver covers an ABSENT result, never a red one."
+                      % (OVERRIDE_LABEL, ", ".join(waived), ", ".join(sorted(green)) or "nothing", HEAD)
+                  )
+                  allow("merged under %s" % OVERRIDE_LABEL)
+
+          if required:
+              not_green = [name for name in required if name not in green]
+              if not_green:
+                  refuse(
+                      "required checks never reported success: %s" % ", ".join(not_green),
+                      "Declared by %s." % source,
+                      missing_names=not_green,
+                  )
+              allow("all %d required check(s) green: %s" % (len(required), ", ".join(required)))
+
+          # Fallback. THIS is the branch that used to merge on an empty list.
+          if not checks and not statuses:
+              if pr_ci_workflows:
+                  refuse(
+                      "no check reported on %s at all, yet this repo runs CI on pull requests." % HEAD[:12],
+                      "An empty check list is NOT green; it means the checks have not started.\n"
+                      "Pull-request workflows: %s\n"
+                      "Declare the gate in .github/required-checks.txt on %s so this is exact."
+                      % (", ".join(pr_ci_workflows), BASE),
+                  )
+              allow("this repo runs no CI on pull requests; merging, as a human clicking merge would")
+
+          allow("all %d observed check(s) completed and passed: %s" % (len(green), ", ".join(sorted(green))))
+          MERGEGATE
+          if [ "$gate_rc" -ne 0 ]; then
+            echo "::error::The check gate refused PR $PR (exit $gate_rc). Not merging."
+            exit "$gate_rc"
+          fi
+
+          # --- Merge, retrying the race. ---
+          # Two PRs finishing seconds apart both try to merge; the loser gets
+          # "Base branch was modified" and, without this loop, dies there permanently
+          # with a green build. That happened twice on 2026-08-13 alone.
+          #
+          # `--auto` is a FALLBACK here, not the mechanism. GitHub refuses to arm auto-merge
+          # on a repo with no required status checks — "Branch does not have required
+          # protected branch rules (enablePullRequestAutoMerge)" — and most FEDCON repos have
+          # none. Every merge attempt in those repos therefore died on that error, which the
+          # loop below correctly classified as unretryable and gave up on. Measured
+          # 2026-08-26: it was the last thing holding ~20 finalize-ready PRs in
+          # opportunity-matrix and ma-guides, AFTER the author gate was opened up.
+          #
+          # We do not need `--auto` anyway: the wait loop above has already confirmed every
+          # other check finished and passed, which is the whole thing `--auto` would wait
+          # for. So try it (it is still the better path where protection DOES exist, since it
+          # queues rather than racing), and fall straight through to a plain merge when
+          # GitHub says the repo cannot arm it.
+          merge_once() {
+            local out
+            out=$(gh pr merge "$PR" --repo "$REPO" --squash --delete-branch --auto 2>&1) && return 0
+            case "$out" in
+              *"protected branch rules"*|*"enablePullRequestAutoMerge"*|*"auto merge is not allowed"*)
+                echo "repo cannot arm auto-merge (no required checks); merging directly"
+                out=$(gh pr merge "$PR" --repo "$REPO" --squash --delete-branch 2>&1) && return 0 ;;
+            esac
+            printf '%s\n' "$out"
+            return 1
+          }
+
+          for attempt in 1 2 3 4 5; do
+            out=$(merge_once) && exit 0
+            echo "$out"
+            case "$out" in
+              *"Base branch was modified"*|*"not mergeable"*)
+                echo "attempt $attempt lost a race with another merge; retrying in 20s"
+                sleep 20 ;;
+              *"already merged"*)
+                echo "already merged by another run"; exit 0 ;;
+              # A GITHUB OUTAGE IS THE DEFINITION OF RETRYABLE, and this loop called it
+              # permanent. Measured 2026-09-09: PR #421 passed all four checks, the loop logged
+              # "all 4 observed check(s) completed and passed", then GitHub's GraphQL API
+              # returned 503 and the very next line was "merge failed for a reason retrying will
+              # not fix". A finished, green, mergeable PR was abandoned by the one mechanism that
+              # exists to land it, over a blip that was gone seconds later.
+              #
+              # This is the same class the wait loop above already guards for its OWN calls (see
+              # "Without the retry a transient blip refuses the PR"); the merge call itself was
+              # simply never given the same treatment. Backs off rather than hammering, because
+              # a 503 usually means the far side is already unhappy.
+              # (Written in fedcon-call-grading's copy on 2026-09-09; carried into the canonical
+              # copy 2026-09-24 so the fleet update does not erase it.)
+              *"HTTP 5"*|*"502"*|*"503"*|*"504"*|*"Service Unavailable"*|*"Bad gateway"*|\
+              *"timed out"*|*"timeout"*|*"connection reset"*|*"EOF occurred"*)
+                echo "attempt $attempt hit a GitHub outage, not a refusal; retrying in $((attempt * 15))s"
+                sleep $((attempt * 15)) ;;
+              *)
+                echo "::error::merge failed for a reason retrying will not fix"; exit 1 ;;
+            esac
+          done
+          echo "::error::still could not merge PR $PR after 5 attempts"
+          exit 1
+
+      # A merge made by a DISPATCHED run (the hourly drain) wakes nothing downstream. GitHub
+      # does not start workflows from events caused by GITHUB_TOKEN, the drain dispatches this
+      # run with it, and so this run finishing never reaches post-merge-deploy.yml, which
+      # listens for exactly that. Seen 2026-09-23: fedcon-it #23 and fedcon-infra-kb #102 were
+      # merged by drain runs and no deploy check followed either merge. A dispatch through the
+      # API is the one thing GITHUB_TOKEN may start, so a dispatched run that merged starts the
+      # check itself. A pull_request run needs none of this: its completion does reach it.
+      - name: Start the post-merge deploy check (a dispatched run's merge wakes nothing else)
+        if: steps.gate.outputs.may_merge == 'true' && github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          base=$(gh api "/repos/$REPO" --jq .default_branch)
+          if ! gh api "/repos/$REPO/contents/.github/workflows/post-merge-deploy.yml?ref=$base" >/dev/null 2>&1; then
+            echo "this repo has no post-merge-deploy.yml; nothing to start"
+            exit 0
+          fi
+          if gh workflow run post-merge-deploy.yml --repo "$REPO" --ref "$base"; then
+            echo "started post-merge-deploy.yml on $base"
+          else
+            echo "::warning::merged, but could not start post-merge-deploy.yml; the next merge's check covers this one"
+          fi

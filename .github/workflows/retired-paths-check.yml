@@ -1,0 +1,30 @@
+# One-touch ledger row 1.8, installed 2026-09-28 on Brad's go. Source of truth: fedcon-infra-kb
+# systems/one-touch/verify/ (retired-paths-ci.py and oldpaths-sweep.sh are copied under scripts/retired-paths/).
+# Runs on every repo as an enterprise ruleset's required workflow, EVALUATE mode first: rule insights show what
+# it would have stopped and nobody is blocked. Switched to active only after a clean week.
+name: Retired paths
+
+on:
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  retired-paths:
+    runs-on: ${{ vars.FEDCON_LINUX_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          repository: FEDCON/.github
+          path: .retired-paths-check
+          sparse-checkout: scripts/retired-paths
+      - name: does this change add a retired path?
+        run: |
+          python3 .retired-paths-check/scripts/retired-paths/retired-paths-ci.py \
+            "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}"

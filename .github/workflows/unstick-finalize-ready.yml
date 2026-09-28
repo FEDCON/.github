@@ -1,0 +1,231 @@
+name: Unstick finalize-ready PRs that GitHub is not checking
+
+# THE CANONICAL COPY LIVES IN claude-config AT
+#   components/repo-workflows/unstick-finalize-ready.yml
+# Do not hand-edit this file in a repo it was installed into — edit the canonical copy and
+# re-run components/scripts/install-merge-machinery.sh.
+#
+# The hole this closes (2026-08-13, after nine finalize-ready PRs across two repos had been
+# sitting open for up to a week):
+#
+# When a PR conflicts with the default branch, GitHub cannot build the test merge commit, so
+# it fires NO `pull_request` event and runs NO checks. The merge workflow never sees the PR.
+# The result is the worst possible state — no red check, no conflict banner in the list
+# view, and the finalize-ready label still says "this is ready". It looks like it is about
+# to merge, forever. Four claude-config PRs (#445, #448, #449, #450) sat exactly like that;
+# every one merged the moment main was merged into its branch, with no other change.
+#
+# `/merge-queue` already reports these under SAYS READY, ISN'T — but only when a human runs
+# it, and nobody did. This makes the drain automatic.
+#
+# It never merges a PR, never touches drafts, and never touches a PR that is not labelled
+# finalize-ready. Reversible: delete this file.
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  # actions: WRITE, not read. Read is what the "never evaluated" check needs to query
+  # whether the merge workflow has run against a PR's head sha (without it that call 403s,
+  # the `|| echo 1` fallback treats every PR as already-evaluated, and the check silently
+  # does nothing — worse than not having it). Write is what lets this job DISPATCH the
+  # merge workflow, which is the only way it can actually get a PR evaluated: see the note
+  # at the dispatch call.
+  actions: write
+
+jobs:
+  unstick:
+    runs-on: ${{ vars.FEDCON_LINUX_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Approve workflow runs GitHub parked, on our own branches only
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # A PULL REQUEST OPENED BY GITHUB-ACTIONS NEVER GETS A CHECK, AND THE MERGE GATE
+          # CORRECTLY REFUSES IT FOREVER.
+          #
+          # GitHub parks workflow runs triggered by a non-collaborator actor as
+          # `action_required` with a 0s duration, waiting for a human to press approve. The
+          # daily platform-updates digest is opened by `github-actions[bot]` through
+          # peter-evans/create-pull-request, so every push to it parked. Measured 2026-09-11:
+          # EVERY daily run from 2026-08-30 onward sat action_required and never executed, and
+          # PR #368 stayed open from 2026-08-03 to 2026-09-11 -- 39 days in which
+          # `components/whats-new.md`, which is injected into every SessionStart on 18 Macs,
+          # did not move on main while a green-looking automated PR sat there.
+          #
+          # The deadlock is total and neither existing mechanism breaks it. The step below
+          # nudges the PR and dispatches the merge workflow; the merge workflow then refuses,
+          # correctly, because no check has reported; and no check will EVER report, because
+          # GitHub is not running any. The drain's own "has it been evaluated" test already
+          # treats action_required as NOT evaluated, so it re-dispatches hourly forever and
+          # the PR collects a merge-gate-blocked label next to a finalize-ready one.
+          #
+          # So approve the parked runs. This is the missing move, and `actions: write` is
+          # already held for the dispatch below.
+          #
+          # SCOPE, deliberately narrow. Only runs on a head branch IN THIS REPOSITORY, and
+          # only on a PR already labelled finalize-ready. A fork PR is the case the human
+          # approval gate actually exists for, and it is untouched: `headRepository` must
+          # equal `$REPO`. Approving a run on our own branch grants nothing new -- the branch
+          # content came from a workflow in this repo that already held these permissions.
+          #
+          # Non-fatal throughout. If GitHub refuses the approval, say so and let the hourly
+          # pass try again; never fail the drain over it.
+          gh pr list --repo "$REPO" --state open --label finalize-ready \
+            --json number,isDraft,headRefOid,headRepository \
+            --jq '.[] | select(.isDraft == false) | "\(.number)\t\(.headRefOid)\t\(.headRepository.name)"' \
+            > /tmp/fr.tsv || : > /tmp/fr.tsv
+
+          approved=0
+          while IFS=$'\t' read -r num sha headrepo; do
+            [ -n "${num:-}" ] || continue
+            if [ "$headrepo" != "${REPO##*/}" ]; then
+              echo "PR #$num: head is on $headrepo, not $REPO - leaving the human approval gate alone."
+              continue
+            fi
+            parked=$(gh api "/repos/$REPO/actions/runs?head_sha=$sha&per_page=50" \
+                       --jq '[.workflow_runs[] | select(.conclusion == "action_required") | .id] | .[]' \
+                       2>/dev/null || true)
+            for run in $parked; do
+              if gh api -X POST "/repos/$REPO/actions/runs/$run/approve" >/dev/null 2>&1; then
+                echo "PR #$num: approved parked run $run."
+                approved=$((approved + 1))
+              else
+                echo "PR #$num: could not approve parked run $run (GitHub refused). A human must press approve on the Actions tab."
+              fi
+            done
+          done < /tmp/fr.tsv
+
+          if [ "$approved" -gt 0 ]; then
+            echo "Approved $approved parked run(s); giving them a moment to start before the nudge below."
+            sleep 20
+          else
+            echo "No parked runs to approve."
+          fi
+
+      - name: Merge the default branch into any finalize-ready PR GitHub has stopped checking
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BASE: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # mergeStateStatus is computed lazily, so a PR touched seconds ago reports
+          # UNKNOWN. Asking for the field forces GitHub to compute it; a second read a
+          # moment later returns the real value.
+          gh pr list --repo "$REPO" --state open --label finalize-ready \
+            --json number,isDraft,headRefName,headRefOid,mergeStateStatus > /tmp/prs.json
+          sleep 10
+          gh pr list --repo "$REPO" --state open --label finalize-ready \
+            --json number,isDraft,headRefName,headRefOid,mergeStateStatus > /tmp/prs.json
+
+          # Two ways a finalize-ready PR goes nowhere with nothing to show for it:
+          #
+          # 1. DIRTY / BEHIND — it conflicts with the base, so GitHub cannot build the test
+          #    merge commit, fires no pull_request event, and runs no checks at all.
+          #
+          # 2. CLEAN but never evaluated — the merge workflow has simply never run against
+          #    this PR's current head. That is every PR that was already open on the day the
+          #    workflow was installed, and any PR whose last event predates it: a workflow
+          #    only sees events fired after it exists, so those PRs sit CLEAN, green and
+          #    ignored forever. Hit twice by hand on 2026-08-13 (admin-test #39,
+          #    claude-plugins #235); re-labelling does NOT reliably fire an event, but
+          #    merging the base in does, because that is a real `synchronize`.
+          #
+          # Both are fixed by the same action, so both are collected here.
+          # Accumulate into a file, not a shell variable: embedding literal newlines in an
+          # assignment inside a YAML block scalar terminates the scalar and the workflow
+          # stops parsing.
+          : > /tmp/need.tsv
+          jq -r '.[] | select(.isDraft == false)
+                     | "\(.number)\t\(.headRefName)\t\(.headRefOid)\t\(.mergeStateStatus)"' \
+            /tmp/prs.json > /tmp/candidates.tsv
+          while IFS=$'\t' read -r num branch sha state; do
+            [ -n "$num" ] || continue
+            if [ "$state" = "DIRTY" ] || [ "$state" = "BEHIND" ]; then
+              printf '%s\t%s\n' "$num" "$branch" >> /tmp/need.tsv
+              continue
+            fi
+            # "Has it been evaluated" must mean a run that actually REACHED A VERDICT, not
+            # merely that a run object exists. `total_count` counts runs GitHub parked as
+            # `action_required` — waiting on a human to press approve — and a parked run is
+            # the definition of not evaluated. Counting it made the drain skip precisely the
+            # PR it exists to rescue, and report "everything has been evaluated" while doing
+            # it. fedcon-marketing #22, 2026-08-13: one run on its head sha, conclusion
+            # action_required, and the drain walked straight past it twice.
+            #
+            # success or failure are real verdicts (a failure means the checks said no, and
+            # re-nudging that would just loop). Everything else — action_required, cancelled,
+            # skipped, stale, still queued — means no verdict was reached.
+            runs=$(gh api "/repos/$REPO/actions/workflows/finalize-ready-merge.yml/runs?head_sha=$sha" \
+                     --jq '[.workflow_runs[] | select(.conclusion == "success" or .conclusion == "failure")] | length' \
+                     2>/dev/null || echo 1)
+            if [ "$runs" = "0" ]; then
+              echo "PR #$num is $state but the merge workflow has never run on $sha - nudging it."
+              printf '%s\t%s\n' "$num" "$branch" >> /tmp/need.tsv
+            fi
+          done < /tmp/candidates.tsv
+
+          stuck=$(cat /tmp/need.tsv)
+
+          if [ -z "$stuck" ]; then
+            echo "Every finalize-ready PR is current with $BASE and has been evaluated."
+            exit 0
+          fi
+
+          while IFS=$'\t' read -r num branch; do
+            [ -n "$num" ] || continue
+            echo "::group::PR #$num ($branch)"
+            git checkout -B "_unstick" "origin/$branch"
+            if git merge "origin/$BASE" --no-edit; then
+              git push origin "HEAD:$branch"
+              echo "PR #$num: merged $BASE in, pushed."
+              # Pushing is NOT enough to get the PR evaluated. This job pushes with
+              # GITHUB_TOKEN, and the `synchronize` that produces is parked by GitHub as
+              # `action_required` — it waits for a human to press approve, which is the one
+              # thing this drain exists to remove. Seen on fedcon-marketing #22, 2026-08-13:
+              # correct nudge, resulting merge run sat unapproved.
+              #
+              # workflow_dispatch through the API IS permitted with GITHUB_TOKEN and runs
+              # immediately, so ask the merge workflow directly instead of hoping the push
+              # wakes it. Non-fatal: if the dispatch fails the push still stands and the
+              # next hourly pass tries again.
+              if gh workflow run finalize-ready-merge.yml --repo "$REPO" --ref "$BASE" -f pr="$num"; then
+                echo "PR #$num: dispatched the merge workflow."
+              else
+                echo "PR #$num: dispatch failed; the next hourly pass will retry."
+              fi
+            else
+              files=$(git diff --name-only --diff-filter=U | tr '\n' ' ')
+              git merge --abort
+              # One comment per stuck state, not one per hour.
+              last=$(gh pr view "$num" --repo "$REPO" --json comments \
+                       --jq '(.comments // []) | last | .body // ""')
+              case "$last" in
+                *"cannot be auto-rebased"*)
+                  echo "PR #$num: already flagged, not re-commenting." ;;
+                *)
+                  {
+                    printf 'This PR is labelled `finalize-ready` but **conflicts with `%s` and cannot be auto-rebased**, so GitHub is running no checks on it at all and the merge workflow never sees it. It has been sitting here looking ready and going nowhere.\n\n' "$BASE"
+                    printf 'Conflicting files: `%s`\n\n' "$files"
+                    printf 'Resolve the conflict and push, or close the PR. Nothing else will move it.\n'
+                  } > /tmp/comment.md
+                  gh pr comment "$num" --repo "$REPO" --body-file /tmp/comment.md
+                  echo "PR #$num: conflicts in ${files}, commented." ;;
+              esac
+            fi
+            echo "::endgroup::"
+          done <<< "$stuck"
