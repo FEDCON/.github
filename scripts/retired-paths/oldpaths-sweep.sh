@@ -30,7 +30,7 @@ P = [
   ("mcp-secrets",   [r"mcp-secrets\.json"], None),
   ("owner-keyfile", [r"claude-workspace-admin\.json"], None),
   ("gcs-sa.json",   [r"gcs-sa\.json"], None),
-  ("{{key}}-script",[r"\{\{[A-Za-z0-9_]*([Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt])[A-Za-z0-9_]*\}\}"],
+  ("{{key}}-script",[r"\{\{(?![A-Za-z0-9_]*[Pp][Uu][Bb][Kk][Ee][Yy]\}\})[A-Za-z0-9_]*([Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt])[A-Za-z0-9_]*\}\}"],
                     ["*.sh", "*.zsh", "*.bash", "*.py", "*.pkginfo", "*.plist", "*.mobileconfig", "*.command"]),
   ("private-key",   [r"-----BEGIN ([A-Z]+ )?PRIVATE KEY-----|\"private_key\": ?\"-----BEGIN"], None),
 ]
